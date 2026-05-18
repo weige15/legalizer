@@ -29,6 +29,8 @@ class Legalizer {
     double total_cost = 0.0;
     double displacement_cost = 0.0;
     double density_cost = 0.0;
+    double repair_total_displacement = 0.0;
+    double repair_max_displacement = 0.0;
   };
 
   std::vector<size_t> placementOrder() const;
@@ -47,6 +49,10 @@ class Legalizer {
   void removeFromOccupancy(size_t cell_index);
   bool findBestCandidate(size_t cell_index, size_t row_budget,
                          bool displacement_only, Candidate& best) const;
+  bool findBestRepairCandidate(size_t cell_index, double old_disp,
+                               double old_total_disp, double old_max_disp,
+                               double old_density_proxy,
+                               Candidate& best) const;
   void repairDisplacementTail();
   double displacementUm(const Cell& cell) const;
   double displacementUmWithPlacement(const Cell& cell,

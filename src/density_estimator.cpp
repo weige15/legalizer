@@ -100,6 +100,11 @@ double DensityEstimator::scoreCandidate(const Rect& rect) const {
 }
 
 double DensityEstimator::overflowProxy() const {
+  return overflowProxyWithCandidate(Rect{});
+}
+
+double DensityEstimator::overflowProxyWithCandidate(const Rect& rect) const {
+  const Rect clipped = intersection(rect, design_.die);
   int64_t total = 0;
   int64_t overflow = 0;
   for (int64_t gy = 0; gy < rows_; ++gy) {
@@ -112,10 +117,16 @@ double DensityEstimator::overflowProxy() const {
       if (it != grids_.end()) grid = it->second;
       if (grid.macro_area >= area) continue;
 
+      int64_t added_area = 0;
+      if (isValidRect(clipped)) {
+        const Rect overlap = intersection(clipped, gridRect(gx, gy));
+        added_area = rectArea(overlap);
+      }
       const double available =
           static_cast<double>(std::max<int64_t>(1, area - grid.macro_area));
-      const double density = 100.0 * static_cast<double>(grid.movable_area) /
-                             available;
+      const double density =
+          100.0 *
+          static_cast<double>(grid.movable_area + added_area) / available;
       ++total;
       if (density > threshold_) ++overflow;
     }

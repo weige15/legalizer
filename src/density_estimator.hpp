@@ -14,6 +14,7 @@ class DensityEstimator {
 
   double scoreCandidate(const Rect& rect) const;
   double overflowProxy() const;
+  double overflowProxyWithCandidate(const Rect& rect) const;
   void commit(const Rect& rect);
   void rebuildMovableOccupancy();
 

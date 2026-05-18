@@ -248,6 +248,34 @@ void testRepairKeepsDensityAwarePlacement() {
           "large displacement is kept when repair would worsen density");
 }
 
+void testRepairReducesMaxWhenDensityProxyStable() {
+  Design d;
+  d.dbu_per_micron = 1000;
+  d.die = Rect{0, 0, 20000, 1000};
+  d.site_width = 100;
+  d.site_height = 1000;
+  d.cells.push_back(makeCell("u0", 0, 0, 200, 1000, 0));
+  d.cells.push_back(makeCell("u1", 0, 0, 100, 1000, 1));
+
+  std::string error;
+  require(validateDesign(d, error), "max repair fixture validates: " + error);
+  std::vector<LegalRow> rows;
+  require(RowIntervalBuilder::build(d, rows, error),
+          "max repair rows build: " + error);
+  DensityEstimator density(d, 1.0);
+  Legalizer legalizer(d, rows, density, 0.0);
+  require(legalizer.legalize(error), "max repair legalize succeeds: " + error);
+  requireLegalPlacement(d);
+
+  const PlacementMetrics metrics = computeMetrics(d, 1.0);
+  require(metrics.density_proxy == 50.0,
+          "repair keeps existing overflow-grid count stable");
+  require(d.cells[1].placed.x_min < 10000,
+          "repair moves tail cell back when DOR proxy is unchanged");
+  require(metrics.max_displacement < 1.0,
+          "repair meaningfully reduces maximum displacement");
+}
+
 void testOverfullFailure() {
   Design d = tinyDesign();
   d.die = Rect{0, 0, 300, 1000};
@@ -273,6 +301,7 @@ int main() {
   testLegalizerAndWriter();
   testConstrainedCellAvoidsTailDisplacement();
   testRepairKeepsDensityAwarePlacement();
+  testRepairReducesMaxWhenDensityProxyStable();
   testOverfullFailure();
   std::cout << "All tests passed\n";
   return 0;

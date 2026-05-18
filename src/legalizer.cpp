@@ -10,6 +10,7 @@ namespace {
 constexpr double kNormFactor = 18.2;
 constexpr double kTailRepairMinGainUm = 5.0;
 constexpr double kRepairEps = 1e-9;
+constexpr size_t kRepairCandidateLimit = 128;
 
 int constrainednessBucket(int64_t starts) {
   if (starts <= 1) return 0;
@@ -331,6 +332,138 @@ bool Legalizer::findBestCandidate(size_t cell_index, size_t row_budget,
   return has_best;
 }
 
+bool Legalizer::findBestRepairCandidate(size_t cell_index, double old_disp,
+                                        double old_total_disp,
+                                        double old_max_disp,
+                                        double old_density_proxy,
+                                        Candidate& best) const {
+  std::vector<Candidate> candidates;
+  const Cell& cell = design_.cells[cell_index];
+  const int64_t width = rectWidth(cell.original);
+  const int64_t height = rectHeight(cell.original);
+  const int64_t row_span = height / design_.site_height;
+
+  auto better_repair = [](const Candidate& a, const Candidate& b) {
+    constexpr double eps = 1e-9;
+    if (std::abs(a.repair_max_displacement - b.repair_max_displacement) > eps) {
+      return a.repair_max_displacement < b.repair_max_displacement;
+    }
+    if (std::abs(a.density_cost - b.density_cost) > eps) {
+      return a.density_cost < b.density_cost;
+    }
+    if (std::abs(a.repair_total_displacement - b.repair_total_displacement) >
+        eps) {
+      return a.repair_total_displacement < b.repair_total_displacement;
+    }
+    if (std::abs(a.displacement_cost - b.displacement_cost) > eps) {
+      return a.displacement_cost < b.displacement_cost;
+    }
+    if (a.y != b.y) return a.y < b.y;
+    return a.x < b.x;
+  };
+
+  auto remember_candidate = [&](Candidate cand) {
+    candidates.push_back(cand);
+    std::sort(candidates.begin(), candidates.end(), better_repair);
+    if (candidates.size() > kRepairCandidateLimit) candidates.pop_back();
+  };
+
+  const std::vector<size_t> row_order = rowOrderForCell(cell);
+  for (size_t start_row : row_order) {
+    std::vector<RowInterval> intervals =
+        subtractOccupancy(commonFreeIntervals(start_row, row_span), start_row,
+                          row_span);
+    if (intervals.empty()) continue;
+
+    for (const RowInterval& interval : intervals) {
+      const int64_t start_min =
+          snapUp(interval.x_min, design_.die.x_min, design_.site_width);
+      const int64_t start_max =
+          snapDown(interval.x_max - width, design_.die.x_min, design_.site_width);
+      if (start_min > start_max) continue;
+
+      const int64_t preferred =
+          clampInt64(cell.original.x_min, start_min, start_max);
+      const int64_t snapped_pref =
+          clampInt64(snapDown(preferred, design_.die.x_min, design_.site_width),
+                     start_min, start_max);
+
+      std::vector<int64_t> xs;
+      const int64_t site_count = 1 + (start_max - start_min) / design_.site_width;
+      const int64_t width_sites =
+          std::max<int64_t>(1, ceilDiv(width, design_.site_width));
+      const int64_t step_budget = std::min<int64_t>(
+          site_count - 1, std::max<int64_t>(8, width_sites + 16));
+      xs.reserve(static_cast<size_t>(6 + 2 * step_budget));
+      xs.push_back(snapped_pref);
+      xs.push_back(clampInt64(snapUp(preferred, design_.die.x_min,
+                                     design_.site_width),
+                              start_min, start_max));
+      xs.push_back(start_min);
+      xs.push_back(start_max);
+      xs.push_back(clampInt64(start_min + width, start_min, start_max));
+      xs.push_back(clampInt64(start_max - width, start_min, start_max));
+      for (int64_t step = 1; step <= step_budget; ++step) {
+        const int64_t delta = step * design_.site_width;
+        if (snapped_pref - delta >= start_min) xs.push_back(snapped_pref - delta);
+        if (snapped_pref + delta <= start_max) xs.push_back(snapped_pref + delta);
+      }
+      std::sort(xs.begin(), xs.end());
+      xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+
+      for (int64_t x : xs) {
+        const int64_t y = rows_[start_row].y;
+        const Rect placed = makeRect(x, y, width, height);
+        if (!contains(design_.die, placed)) continue;
+        bool overlap = false;
+        for (int64_t offset = 0; offset < row_span; ++offset) {
+          if (segmentOverlaps(occupancy_[start_row + static_cast<size_t>(offset)],
+                              x, x + width)) {
+            overlap = true;
+            break;
+          }
+        }
+        if (overlap) continue;
+
+        const double new_disp = displacementUmWithPlacement(cell, placed);
+        const double new_total_disp = old_total_disp - old_disp + new_disp;
+        if (new_total_disp > old_total_disp + kRepairEps) continue;
+
+        const double new_max_disp =
+            maxDisplacementUmWithPlacement(cell_index, placed);
+        if (new_max_disp >
+            old_max_disp - kTailRepairMinGainUm + kRepairEps) {
+          continue;
+        }
+
+        const double disp_cost = new_disp * kNormFactor;
+        const double density_cost = density_.scoreCandidate(placed);
+        Candidate cand{start_row,
+                       x,
+                       y,
+                       alpha_ * disp_cost + (1.0 - alpha_) * density_cost,
+                       disp_cost,
+                       density_cost,
+                       new_total_disp,
+                       new_max_disp};
+        remember_candidate(cand);
+      }
+    }
+  }
+
+  if (candidates.empty()) return false;
+  for (const Candidate& cand : candidates) {
+    const Rect placed = makeRect(cand.x, cand.y, width, height);
+    const double new_density_proxy =
+        density_.overflowProxyWithCandidate(placed);
+    if (new_density_proxy <= old_density_proxy + kRepairEps) {
+      best = cand;
+      return true;
+    }
+  }
+  return false;
+}
+
 double Legalizer::displacementUm(const Cell& cell) const {
   return displacementUmWithPlacement(cell, cell.placed);
 }
@@ -420,34 +553,13 @@ void Legalizer::repairDisplacementTail() {
     density_.rebuildMovableOccupancy();
 
     Candidate best;
-    if (!findBestCandidate(cell_index, rows_.size(), false, best)) {
-      restore_old(cell_index, old_placed);
-      continue;
-    }
-
-    const Rect new_placed = makeRect(best.x, best.y, rectWidth(cell.original),
-                                     rectHeight(cell.original));
-    const double new_disp = displacementUmWithPlacement(cell, new_placed);
-    const double new_total_disp = old_total_disp - old_disp + new_disp;
-    const double new_max_disp =
-        maxDisplacementUmWithPlacement(cell_index, new_placed);
-
-    const bool meaningful_max_gain =
-        new_max_disp <= old_max_disp - kTailRepairMinGainUm + kRepairEps;
-    const bool total_not_worse = new_total_disp <= old_total_disp + kRepairEps;
-    if (!meaningful_max_gain || !total_not_worse) {
+    if (!findBestRepairCandidate(cell_index, old_disp, old_total_disp,
+                                 old_max_disp, old_density_proxy, best)) {
       restore_old(cell_index, old_placed);
       continue;
     }
 
     commit(cell_index, best);
-    const double new_density_proxy = density_.overflowProxy();
-    if (new_density_proxy > old_density_proxy + kRepairEps) {
-      removeFromOccupancy(cell_index);
-      cell.has_placement = false;
-      density_.rebuildMovableOccupancy();
-      restore_old(cell_index, old_placed);
-    }
   }
 
   density_.rebuildMovableOccupancy();
