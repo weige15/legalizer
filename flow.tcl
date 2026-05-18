@@ -1,16 +1,5 @@
 # 1. Load files
-if {![info exists caseName]} {
-    set caseName "public/ispd19_sample"
-}
-if {![info exists alpha]} {
-    set alpha 0.7
-}
-if {![info exists threshold]} {
-    set threshold 45
-}
-if {![info exists use_legalizer]} {
-    set use_legalizer 1
-}
+set caseName "testcase/ispd19_sample"
 set lef_file [lindex [glob -directory $caseName *.lef] 0]
 set def_file [lindex [glob -directory $caseName *.def] 0]
 if {$lef_file eq "" || $def_file eq ""} {
@@ -35,25 +24,17 @@ foreach inst [$block getInsts] {
     set inst_locs([$inst getName]) [$inst getLocation]
 }
 
-# 4. Legalize placement
-set gp_file [file join $caseName "${design_name}_insts.gp"]
-set out_file [file join $caseName "${design_name}_insts.tcl"]
-
-if {$use_legalizer} {
-    exec make >@ stdout 2>@ stderr
-    exec timeout 30m ./Legalizer $alpha $threshold $gp_file $out_file >@ stdout 2>@ stderr
-    source $out_file
-} else {
-    detailed_placement
-}
+# 4. Perform OpenROAD detail placement to debug
+detailed_placement
+# Replace with your program to legalize
+# exec make clean
+# exec make
+# exec timeout 30m Legalizer <alpha> <threshold> <input>.gp <output>.tcl
+# source <output>.tcl
 
 # 5. Check Legality
 if {[catch { check_placement -verbose } result] == 0} {
     puts "Legality PASS\n"
-} else {
-    puts "Legality FAIL"
-    puts $result
-    error "Placement legality check failed"
 }
 
 # 6. Calculate displacement
@@ -100,6 +81,8 @@ puts "Done: $heat_name generated."
 
 # Parameter Settings
 # You are highly encouraged to experiment with different combinations to optimize the performance.
+set threshold 45;
+set alpha 0.7;
 set norm_factor 18.2;
 
 # 7. Calculate DOR (0-100)

@@ -11,6 +11,7 @@ Legalizer
 
 # Test binaries and temporary output
 tests/test_legalizer
+tests/out_*.tcl
 *.tcl.out
 *.log
 *.rpt
@@ -18,6 +19,7 @@ tests/test_legalizer
 
 # Generated placement/OpenROAD artifacts
 *.gp
+!tests/fixture_*.gp
 *.def.gz
 *.odb
 *.spef
