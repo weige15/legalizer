@@ -1,0 +1,41 @@
+# Build outputs
+Legalizer
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+
+# Test binaries and temporary output
+tests/test_legalizer
+*.tcl.out
+*.log
+*.rpt
+*.tmp
+
+# Generated placement/OpenROAD artifacts
+*.gp
+*.def.gz
+*.odb
+*.spef
+*.sdc
+*.vcd
+results/
+reports/
+logs/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local tool/cache directories
+.pytest_cache/
+.cache/
+.agents/
+.codex/
