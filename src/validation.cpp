@@ -13,6 +13,27 @@ bool validateDesign(const Design &design, const RowModel &baseRows, std::string 
       }
       return false;
     }
+    const Rect pr = placedRect(cell.original, cell.x, cell.y);
+    if (!contains(design.die, pr)) {
+      if (error) {
+        *error = "cell " + cell.name + " is outside the die";
+      }
+      return false;
+    }
+    if (checker.rowIndexForY(cell.y) < 0 || !aligned(cell.x, design.die.llx, design.siteWidth)) {
+      if (error) {
+        *error = "cell " + cell.name + " is not aligned to a legal site";
+      }
+      return false;
+    }
+    for (const Obstacle &obs : design.obstacles) {
+      if (overlaps(pr, obs.rect)) {
+        if (error) {
+          *error = "cell " + cell.name + " overlaps fixed object " + obs.name;
+        }
+        return false;
+      }
+    }
     if (!checker.commit(cell, cell.x, cell.y)) {
       if (error) {
         std::ostringstream oss;
@@ -25,4 +46,3 @@ bool validateDesign(const Design &design, const RowModel &baseRows, std::string 
   (void)baseRows;
   return true;
 }
-

@@ -25,8 +25,13 @@ Config parseConfig(int argc, char **argv) {
   Config cfg;
   cfg.alpha = parseFiniteDouble(argv[1], "alpha");
   cfg.threshold = parseFiniteDouble(argv[2], "threshold");
+  if (cfg.alpha < 0.0 || cfg.alpha > 1.0) {
+    throw std::runtime_error("alpha must be in [0, 1]");
+  }
+  if (cfg.threshold < 0.0) {
+    throw std::runtime_error("threshold must be non-negative");
+  }
   cfg.inputPath = argv[3];
   cfg.outputPath = argv[4];
   return cfg;
 }
-

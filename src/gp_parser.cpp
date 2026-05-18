@@ -21,6 +21,22 @@ Coord parseCoordToken(const std::string &token, int lineNo, const char *field) {
   return value;
 }
 
+int parsePositiveIntToken(const std::string &token, int lineNo, const char *field) {
+  const Coord value = parseCoordToken(token, lineNo, field);
+  if (value <= 0 || value > std::numeric_limits<int>::max()) {
+    throw std::runtime_error("line " + std::to_string(lineNo) + ": invalid positive integer in " + field);
+  }
+  return static_cast<int>(value);
+}
+
+Coord checkedAdd(Coord a, Coord b, int lineNo, const char *field) {
+  if ((b > 0 && a > std::numeric_limits<Coord>::max() - b) ||
+      (b < 0 && a < std::numeric_limits<Coord>::min() - b)) {
+    throw std::runtime_error("line " + std::to_string(lineNo) + ": coordinate overflow in " + field);
+  }
+  return a + b;
+}
+
 ObjectType parseType(const std::string &token, int lineNo) {
   if (token == "CELL") {
     return ObjectType::Cell;
@@ -80,7 +96,7 @@ Design parseGpFile(const std::string &path) {
         if (!(iss >> v) || (iss >> extra)) {
           throw std::runtime_error("line " + std::to_string(lineNo) + ": malformed DBU_Per_Micron");
         }
-        d.dbuPerMicron = static_cast<int>(parseCoordToken(v, lineNo, "DBU_Per_Micron"));
+        d.dbuPerMicron = parsePositiveIntToken(v, lineNo, "DBU_Per_Micron");
         haveDbu = true;
       } else if (first == "DieArea_LL") {
         std::string x, y, extra;
@@ -103,14 +119,14 @@ Design parseGpFile(const std::string &path) {
         if (!(iss >> v) || (iss >> extra)) {
           throw std::runtime_error("line " + std::to_string(lineNo) + ": malformed Site_Width");
         }
-        d.siteWidth = parseCoordToken(v, lineNo, "Site_Width");
+        d.siteWidth = parsePositiveIntToken(v, lineNo, "Site_Width");
         haveSW = true;
       } else if (first == "Site_Height") {
         std::string v, extra;
         if (!(iss >> v) || (iss >> extra)) {
           throw std::runtime_error("line " + std::to_string(lineNo) + ": malformed Site_Height");
         }
-        d.siteHeight = parseCoordToken(v, lineNo, "Site_Height");
+        d.siteHeight = parsePositiveIntToken(v, lineNo, "Site_Height");
         haveSH = true;
       } else {
         throw std::runtime_error("line " + std::to_string(lineNo) + ": unexpected metadata key " + first);
@@ -131,7 +147,7 @@ Design parseGpFile(const std::string &path) {
       throw std::runtime_error("line " + std::to_string(lineNo) + ": non-positive object dimensions");
     }
     const ObjectType type = parseType(stype, lineNo);
-    Rect rect{x, y, x + w, y + h};
+    Rect rect{x, y, checkedAdd(x, w, lineNo, "URX"), checkedAdd(y, h, lineNo, "URY")};
     if (type == ObjectType::Cell) {
       d.cells.push_back(Cell{name, rect, inputIndex, false, 0, 0});
     } else {
@@ -153,4 +169,3 @@ Design parseGpFile(const std::string &path) {
   }
   return d;
 }
-

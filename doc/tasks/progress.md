@@ -9,3 +9,10 @@
 - [x] Local Refinement (`doc/tasks/local-refinement.md`)
 - [x] TCL Writer (`doc/tasks/tcl-writer.md`)
 - [x] Validation Helpers (`doc/tasks/validation-helpers.md`)
+
+Validation update:
+
+- [x] `make`
+- [x] `make test`
+- [x] CLI smoke test on a small `.gp` fixture
+- [ ] OpenROAD public benchmark validation: blocked because `openroad` is not installed in this environment

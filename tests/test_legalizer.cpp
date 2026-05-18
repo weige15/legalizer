@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -44,6 +45,24 @@ void testConfig() {
     threw = true;
   }
   assert(threw);
+
+  threw = false;
+  const char *badAlpha[] = {"Legalizer", "1.1", "45", "in.gp", "out.tcl"};
+  try {
+    (void)parseConfig(5, const_cast<char **>(badAlpha));
+  } catch (const std::exception &) {
+    threw = true;
+  }
+  assert(threw);
+
+  threw = false;
+  const char *badThreshold[] = {"Legalizer", "0.7", "-1", "in.gp", "out.tcl"};
+  try {
+    (void)parseConfig(5, const_cast<char **>(badThreshold));
+  } catch (const std::exception &) {
+    threw = true;
+  }
+  assert(threw);
 }
 
 void testParser() {
@@ -75,6 +94,19 @@ void testParser() {
     threw = true;
   }
   assert(threw);
+
+  const std::string overflow = tempPath("overflow.gp");
+  writeFile(overflow,
+            "DBU_Per_Micron 1000\nDieArea_LL 0 0\nDieArea_UR 1000 1000\nSite_Width 100\n"
+            "Site_Height 100\nName LLX LLY Width Height Type\nx " +
+                std::to_string(std::numeric_limits<Coord>::max()) + " 0 1 1 CELL\n");
+  threw = false;
+  try {
+    (void)parseGpFile(overflow);
+  } catch (const std::exception &) {
+    threw = true;
+  }
+  assert(threw);
 }
 
 void testGeometry() {
@@ -94,6 +126,25 @@ void testRowsAndValidation() {
   assert(!rows.canPlace(d.cells[1], 0, 0));
   assert(rows.canPlace(d.cells[1], 1000, 0));
   assert(rows.uncommit(d.cells[0], 0, 0));
+}
+
+void testValidationFailures() {
+  Design d = tinyDesign();
+  RowModel rows(d);
+  std::string error;
+  assert(!validateDesign(d, rows, &error));
+
+  d.cells[0].placed = true;
+  d.cells[0].x = 500;
+  d.cells[0].y = 0;
+  d.cells[1].placed = true;
+  d.cells[1].x = 1000;
+  d.cells[1].y = 0;
+  assert(!validateDesign(d, rows, &error));
+
+  d.cells[0].x = 0;
+  d.cells[1].x = 0;
+  assert(!validateDesign(d, rows, &error));
 }
 
 void testDensity() {
@@ -153,9 +204,9 @@ int main() {
   testParser();
   testGeometry();
   testRowsAndValidation();
+  testValidationFailures();
   testDensity();
   testLegalizeAndWriter();
   testEndToEndFile();
   return 0;
 }
-
