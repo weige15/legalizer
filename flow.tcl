@@ -1,7 +1,24 @@
 # 1. Load files
-set caseName "public/ispd15_mgc_matrix_mult_a"
-set threshold 45
-set alpha 0.7
+if {[info exists ::env(CASE_NAME)]} {
+    set caseName $::env(CASE_NAME)
+} else {
+    set caseName "public/ispd15_mgc_matrix_mult_a"
+}
+if {[info exists ::env(THRESHOLD)]} {
+    set threshold $::env(THRESHOLD)
+} else {
+    set threshold 45
+}
+if {[info exists ::env(ALPHA)]} {
+    set alpha $::env(ALPHA)
+} else {
+    set alpha 0.7
+}
+if {[info exists ::env(PLACER_MODE)]} {
+    set placer_mode $::env(PLACER_MODE)
+} else {
+    set placer_mode "legalizer"
+}
 set norm_factor 18.2
 
 set lef_file [lindex [glob -directory $caseName *.lef] 0]
@@ -29,12 +46,18 @@ foreach inst [$block getInsts] {
     set inst_locs([$inst getName]) [$inst getLocation]
 }
 
-# 4. Run this legalizer and apply the generated direct place_cell commands.
+# 4. Run the selected local validation mode.
 set gp_file [file join $caseName "${design_name}_insts.gp"]
 set out_tcl [file join $caseName "${design_name}_insts.tcl"]
-exec make
-exec timeout 30m ./Legalizer $alpha $threshold $gp_file $out_tcl
-source $out_tcl
+if {$placer_mode eq "legalizer"} {
+    exec make
+    exec timeout 30m ./Legalizer $alpha $threshold $gp_file $out_tcl
+    source $out_tcl
+} elseif {$placer_mode eq "detailed"} {
+    detailed_placement
+} else {
+    error "Unknown PLACER_MODE '$placer_mode'. Use legalizer or detailed."
+}
 
 # 5. Check Legality
 if {[catch { check_placement -verbose } result] == 0} {
@@ -130,6 +153,8 @@ puts "Total displacement     : [format "%.1f" $total_u] u"
 puts "Average displacement   : [format "%.1f" $avg_u] u"
 puts "Max displacement       : [format "%.1f" $max_u] u"
 puts "Threshold              : $threshold"
+puts "Alpha                  : $alpha"
+puts "Placer mode            : $placer_mode"
 puts "Total Grids            : $total_grids"
 puts "Overflow Grids         : $overflow_grids"
 puts "DOR (Density Overflow) : [format "%.2f" $dor] %"
