@@ -114,12 +114,12 @@ void legalizeDesign(Design &design, RowModel &rows, DensityGrid &density, double
       std::cerr << "Legalizer progress: placed " << pos << " / " << design.cells.size() << "\n";
     }
 
-    Candidate best = bestForCell(cell, design, rows, density, alpha, 9, 3);
+    Candidate best = bestForCell(cell, design, rows, density, alpha, 11, 8);
     if (!best.valid) {
-      best = bestForCell(cell, design, rows, density, alpha, 25, 5);
+      best = bestForCell(cell, design, rows, density, alpha, 31, 12);
     }
     if (!best.valid) {
-      best = bestForCell(cell, design, rows, density, alpha, -1, 8);
+      best = bestForCell(cell, design, rows, density, alpha, -1, 16);
     }
     if (!best.valid || !rows.commit(cell, best.x, best.y)) {
       throw std::runtime_error("cannot legalize cell " + cell.name);
@@ -136,9 +136,47 @@ void legalizeDesign(Design &design, RowModel &rows, DensityGrid &density, double
 
 void refineDesign(Design &design, RowModel &rows, DensityGrid &density, double alpha) {
   if (design.cells.size() > 20000) {
-    (void)rows;
-    (void)density;
-    (void)alpha;
+    std::vector<std::size_t> order(design.cells.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t ia, std::size_t ib) {
+      const Cell &a = design.cells[ia];
+      const Cell &b = design.cells[ib];
+      const Coord da = manhattan(a.original, a.x, a.y);
+      const Coord db = manhattan(b.original, b.x, b.y);
+      if (da != db) {
+        return da > db;
+      }
+      return a.inputIndex < b.inputIndex;
+    });
+
+    const std::size_t limit = std::min<std::size_t>(order.size(), 20000);
+    std::size_t improved = 0;
+    for (std::size_t k = 0; k < limit; ++k) {
+      Cell &cell = design.cells[order[k]];
+      const Coord oldX = cell.x;
+      const Coord oldY = cell.y;
+      density.removeCell(cell, oldX, oldY);
+      if (!rows.uncommit(cell, oldX, oldY)) {
+        density.addCell(cell, oldX, oldY);
+        continue;
+      }
+
+      const double oldScore = placementScore(cell, design, density, alpha, oldX, oldY);
+      Candidate best = bestForCell(cell, design, rows, density, alpha, 21, 24);
+      if (best.valid && best.score + 1e-9 < oldScore && rows.commit(cell, best.x, best.y)) {
+        cell.x = best.x;
+        cell.y = best.y;
+        density.addCell(cell, cell.x, cell.y);
+        ++improved;
+      } else {
+        rows.commit(cell, oldX, oldY);
+        cell.x = oldX;
+        cell.y = oldY;
+        density.addCell(cell, oldX, oldY);
+      }
+    }
+    std::cerr << "Legalizer refinement: improved " << improved << " / " << limit
+              << " high-displacement cells\n";
     return;
   }
   const int passes = 2;
