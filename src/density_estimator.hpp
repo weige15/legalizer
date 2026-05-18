@@ -13,10 +13,7 @@ class DensityEstimator {
   DensityEstimator(const Design& design, double threshold);
 
   double scoreCandidate(const Rect& rect) const;
-  double overflowProxy() const;
-  double overflowProxyWithCandidate(const Rect& rect) const;
   void commit(const Rect& rect);
-  void rebuildMovableOccupancy();
 
   int64_t gridSize() const { return grid_size_; }
 
