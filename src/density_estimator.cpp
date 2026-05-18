@@ -12,7 +12,7 @@ DensityEstimator::DensityEstimator(const Design& design, double threshold)
 
   for (const Obstacle& obstacle : design_.obstacles) {
     if (obstacle.type == InstanceType::Macro) {
-      addArea(intersection(obstacle.rect, design_.die), true);
+      addArea(intersection(obstacle.rect, design_.die), true, 1);
     }
   }
 }
@@ -32,7 +32,7 @@ int64_t DensityEstimator::gridArea(int64_t gx, int64_t gy) const {
   return rectArea(gridRect(gx, gy));
 }
 
-void DensityEstimator::addArea(const Rect& rect, bool macro) {
+void DensityEstimator::addArea(const Rect& rect, bool macro, int64_t sign) {
   if (!isValidRect(rect)) return;
   int64_t gx0 = floorDiv(rect.x_min - design_.die.x_min, grid_size_);
   int64_t gy0 = floorDiv(rect.y_min - design_.die.y_min, grid_size_);
@@ -49,9 +49,11 @@ void DensityEstimator::addArea(const Rect& rect, bool macro) {
       if (!isValidRect(overlap)) continue;
       Grid& grid = grids_[key(gx, gy)];
       if (macro) {
-        grid.macro_area += rectArea(overlap);
+        grid.macro_area =
+            std::max<int64_t>(0, grid.macro_area + sign * rectArea(overlap));
       } else {
-        grid.movable_area += rectArea(overlap);
+        grid.movable_area =
+            std::max<int64_t>(0, grid.movable_area + sign * rectArea(overlap));
       }
     }
   }
@@ -100,7 +102,11 @@ double DensityEstimator::scoreCandidate(const Rect& rect) const {
 }
 
 void DensityEstimator::commit(const Rect& rect) {
-  addArea(intersection(rect, design_.die), false);
+  addArea(intersection(rect, design_.die), false, 1);
+}
+
+void DensityEstimator::uncommit(const Rect& rect) {
+  addArea(intersection(rect, design_.die), false, -1);
 }
 
 }  // namespace legalizer

@@ -104,6 +104,29 @@ void testDensity() {
   density.commit(r);
   const double after = density.scoreCandidate(r);
   require(after >= before, "committed occupancy increases future score");
+  density.uncommit(r);
+  require(density.scoreCandidate(r) == before,
+          "uncommitted occupancy restores future score");
+}
+
+void requireLegalPlacements(const Design& d) {
+  for (size_t i = 0; i < d.cells.size(); ++i) {
+    const Cell& cell = d.cells[i];
+    require(cell.has_placement, "cell has placement: " + cell.name);
+    require(contains(d.die, cell.placed), "cell inside die: " + cell.name);
+    require((cell.placed.x_min - d.die.x_min) % d.site_width == 0,
+            "cell x site aligned: " + cell.name);
+    require((cell.placed.y_min - d.die.y_min) % d.site_height == 0,
+            "cell y row aligned: " + cell.name);
+    for (const Obstacle& obstacle : d.obstacles) {
+      require(!intersects(cell.placed, obstacle.rect),
+              "cell avoids obstacle: " + cell.name);
+    }
+    for (size_t j = i + 1; j < d.cells.size(); ++j) {
+      require(!intersects(cell.placed, d.cells[j].placed),
+              "cells do not overlap");
+    }
+  }
 }
 
 void testLegalizerAndWriter() {
@@ -127,6 +150,7 @@ void testLegalizerAndWriter() {
   require(d.cells[0].placed.y_min % d.site_height == 0, "y row aligned");
   require(!intersects(d.cells[0].placed, d.cells[1].placed),
           "placed cells do not overlap");
+  requireLegalPlacements(d);
 
   require(TclWriter::writeFile("tests/out_writer.tcl", d, error),
           "writer succeeds: " + error);
@@ -155,6 +179,26 @@ void testOverfullFailure() {
           "overfull error names placement failure");
 }
 
+void testOutlierStressRemainsLegal() {
+  Design d;
+  d.dbu_per_micron = 1000;
+  d.die = Rect{0, 0, 120000, 4000};
+  d.site_width = 1000;
+  d.site_height = 1000;
+  for (size_t i = 0; i < 48; ++i) {
+    d.cells.push_back(makeCell("u" + std::to_string(i), 0, 0, 1000, 1000, i));
+  }
+
+  std::string error;
+  require(validateDesign(d, error), "stress model validates: " + error);
+  std::vector<LegalRow> rows;
+  require(RowIntervalBuilder::build(d, rows, error), "stress rows build");
+  DensityEstimator density(d, 45.0);
+  Legalizer legalizer(d, rows, density, 0.7);
+  require(legalizer.legalize(error), "stress legalize succeeds: " + error);
+  requireLegalPlacements(d);
+}
+
 }  // namespace
 
 int main() {
@@ -164,6 +208,7 @@ int main() {
   testDensity();
   testLegalizerAndWriter();
   testOverfullFailure();
+  testOutlierStressRemainsLegal();
   std::cout << "All tests passed\n";
   return 0;
 }

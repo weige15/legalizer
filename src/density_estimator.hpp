@@ -14,6 +14,7 @@ class DensityEstimator {
 
   double scoreCandidate(const Rect& rect) const;
   void commit(const Rect& rect);
+  void uncommit(const Rect& rect);
 
   int64_t gridSize() const { return grid_size_; }
 
@@ -26,7 +27,7 @@ class DensityEstimator {
   uint64_t key(int64_t gx, int64_t gy) const;
   Rect gridRect(int64_t gx, int64_t gy) const;
   int64_t gridArea(int64_t gx, int64_t gy) const;
-  void addArea(const Rect& rect, bool macro);
+  void addArea(const Rect& rect, bool macro, int64_t sign);
 
   const Design& design_;
   double threshold_ = 0.0;

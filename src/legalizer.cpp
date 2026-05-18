@@ -8,6 +8,12 @@ namespace legalizer {
 namespace {
 
 constexpr double kNormFactor = 18.2;
+constexpr int64_t kInitialRadiusSites = 20;
+constexpr size_t kMaxRefinementRounds = 2;
+constexpr size_t kMaxRefinementOutliers = 256;
+constexpr size_t kRefinementRowBudget = 160;
+constexpr size_t kPartnerRowBudget = 48;
+constexpr double kDensityEps = 1e-6;
 
 void subtractSegment(std::vector<RowInterval>& intervals, int64_t cut_min,
                      int64_t cut_max) {
@@ -116,6 +122,47 @@ std::vector<RowInterval> Legalizer::subtractOccupancy(
   return intervals;
 }
 
+std::vector<int64_t> Legalizer::xCandidatesForInterval(
+    const Cell& cell, const RowInterval& interval, int64_t width,
+    int64_t radius_sites) const {
+  const int64_t start_min =
+      snapUp(interval.x_min, design_.die.x_min, design_.site_width);
+  const int64_t start_max =
+      snapDown(interval.x_max - width, design_.die.x_min, design_.site_width);
+  if (start_min > start_max) return {};
+
+  const int64_t preferred = clampInt64(cell.original.x_min, start_min, start_max);
+  const int64_t snapped_down =
+      clampInt64(snapDown(preferred, design_.die.x_min, design_.site_width),
+                 start_min, start_max);
+  const int64_t snapped_up =
+      clampInt64(snapUp(preferred, design_.die.x_min, design_.site_width),
+                 start_min, start_max);
+
+  std::vector<int64_t> xs;
+  xs.reserve(static_cast<size_t>(std::min<int64_t>(radius_sites * 2 + 6, 512)));
+  xs.push_back(snapped_down);
+  xs.push_back(snapped_up);
+  xs.push_back(start_min);
+  xs.push_back(start_max);
+
+  const int64_t dense_radius = std::min<int64_t>(radius_sites, 64);
+  for (int64_t step = 1; step <= dense_radius; ++step) {
+    const int64_t delta = step * design_.site_width;
+    if (snapped_down - delta >= start_min) xs.push_back(snapped_down - delta);
+    if (snapped_up + delta <= start_max) xs.push_back(snapped_up + delta);
+  }
+  for (int64_t step = dense_radius + 16; step <= radius_sites; step += 16) {
+    const int64_t delta = step * design_.site_width;
+    if (snapped_down - delta >= start_min) xs.push_back(snapped_down - delta);
+    if (snapped_up + delta <= start_max) xs.push_back(snapped_up + delta);
+  }
+
+  std::sort(xs.begin(), xs.end());
+  xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+  return xs;
+}
+
 bool Legalizer::segmentOverlaps(const std::vector<Segment>& segments,
                                 int64_t x_min, int64_t x_max) const {
   const auto it = std::lower_bound(
@@ -136,8 +183,30 @@ bool Legalizer::isBetterCandidate(const Candidate& cand,
   return cand.x < best.x;
 }
 
+bool Legalizer::isBetterRefinement(const RefinementMove& cand,
+                                   const RefinementMove& best) const {
+  constexpr double eps = 1e-9;
+  if (cand.max_displacement_cost + eps < best.max_displacement_cost) return true;
+  if (std::abs(cand.max_displacement_cost - best.max_displacement_cost) > eps) {
+    return false;
+  }
+  if (cand.total_displacement_cost + eps < best.total_displacement_cost) {
+    return true;
+  }
+  if (std::abs(cand.total_displacement_cost - best.total_displacement_cost) >
+      eps) {
+    return false;
+  }
+  if (cand.density_cost + eps < best.density_cost) return true;
+  if (std::abs(cand.density_cost - best.density_cost) > eps) return false;
+  if (cand.cell_rect.y_min != best.cell_rect.y_min) {
+    return cand.cell_rect.y_min < best.cell_rect.y_min;
+  }
+  return cand.cell_rect.x_min < best.cell_rect.x_min;
+}
+
 bool Legalizer::evaluateCandidatesForRow(size_t cell_index, size_t start_row,
-                                         Candidate& best,
+                                         int64_t radius_sites, Candidate& best,
                                          bool& has_best) const {
   const Cell& cell = design_.cells[cell_index];
   const int64_t width = rectWidth(cell.original);
@@ -151,33 +220,8 @@ bool Legalizer::evaluateCandidatesForRow(size_t cell_index, size_t start_row,
 
   bool found = false;
   for (const RowInterval& interval : intervals) {
-    const int64_t start_min =
-        snapUp(interval.x_min, design_.die.x_min, design_.site_width);
-    const int64_t start_max =
-        snapDown(interval.x_max - width, design_.die.x_min, design_.site_width);
-    if (start_min > start_max) continue;
-
-    const int64_t preferred = clampInt64(cell.original.x_min, start_min, start_max);
-    const int64_t snapped_pref =
-        clampInt64(snapDown(preferred, design_.die.x_min, design_.site_width),
-                   start_min, start_max);
-
-    std::vector<int64_t> xs;
-    xs.reserve(15);
-    xs.push_back(snapped_pref);
-    xs.push_back(clampInt64(snapUp(preferred, design_.die.x_min,
-                                   design_.site_width),
-                            start_min, start_max));
-    xs.push_back(start_min);
-    xs.push_back(start_max);
-    for (int step = 1; step <= 5; ++step) {
-      const int64_t delta = step * design_.site_width;
-      if (snapped_pref - delta >= start_min) xs.push_back(snapped_pref - delta);
-      if (snapped_pref + delta <= start_max) xs.push_back(snapped_pref + delta);
-    }
-    std::sort(xs.begin(), xs.end());
-    xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
-
+    const std::vector<int64_t> xs =
+        xCandidatesForInterval(cell, interval, width, radius_sites);
     for (int64_t x : xs) {
       const int64_t y = rows_[start_row].y;
       const Rect placed = makeRect(x, y, width, height);
@@ -211,23 +255,381 @@ bool Legalizer::evaluateCandidatesForRow(size_t cell_index, size_t start_row,
   return found;
 }
 
-void Legalizer::commit(size_t cell_index, const Candidate& candidate) {
-  Cell& cell = design_.cells[cell_index];
-  cell.placed = makeRect(candidate.x, candidate.y, rectWidth(cell.original),
-                         rectHeight(cell.original));
-  cell.has_placement = true;
+bool Legalizer::findBestPlacement(size_t cell_index, size_t row_budget,
+                                  int64_t radius_sites, Candidate& best,
+                                  bool& has_best) const {
+  const Cell& cell = design_.cells[cell_index];
+  bool found_any = false;
+  size_t feasible_rows_seen = 0;
+  for (size_t row_index : rowOrderForCell(cell)) {
+    if (evaluateCandidatesForRow(cell_index, row_index, radius_sites, best,
+                                 has_best)) {
+      found_any = true;
+      ++feasible_rows_seen;
+      if (has_best && feasible_rows_seen >= row_budget) break;
+    }
+  }
+  return found_any;
+}
 
-  const int64_t row_span = rectHeight(cell.original) / design_.site_height;
+void Legalizer::addOccupancy(const Rect& rect, size_t start_row) {
+  const int64_t row_span = rectHeight(rect) / design_.site_height;
   for (int64_t offset = 0; offset < row_span; ++offset) {
-    auto& segments = occupancy_[candidate.row_index + static_cast<size_t>(offset)];
-    segments.push_back(Segment{cell.placed.x_min, cell.placed.x_max});
+    auto& segments = occupancy_[start_row + static_cast<size_t>(offset)];
+    segments.push_back(Segment{rect.x_min, rect.x_max});
     std::sort(segments.begin(), segments.end(), [](const Segment& a,
                                                    const Segment& b) {
       if (a.x_min != b.x_min) return a.x_min < b.x_min;
       return a.x_max < b.x_max;
     });
   }
+}
+
+void Legalizer::removeOccupancy(const Rect& rect, size_t start_row) {
+  const int64_t row_span = rectHeight(rect) / design_.site_height;
+  for (int64_t offset = 0; offset < row_span; ++offset) {
+    auto& segments = occupancy_[start_row + static_cast<size_t>(offset)];
+    const auto it = std::find_if(
+        segments.begin(), segments.end(), [&rect](const Segment& segment) {
+          return segment.x_min == rect.x_min && segment.x_max == rect.x_max;
+        });
+    if (it != segments.end()) segments.erase(it);
+  }
+}
+
+bool Legalizer::rowIndexForY(int64_t y, size_t& row_index) const {
+  if (y < design_.die.y_min || y >= design_.die.y_max) return false;
+  const int64_t offset = y - design_.die.y_min;
+  if (offset % design_.site_height != 0) return false;
+  const int64_t index = offset / design_.site_height;
+  if (index < 0 || static_cast<size_t>(index) >= rows_.size()) return false;
+  if (rows_[static_cast<size_t>(index)].y != y) return false;
+  row_index = static_cast<size_t>(index);
+  return true;
+}
+
+bool Legalizer::placementIsLegalInCurrentOccupancy(const Cell& cell,
+                                                   const Rect& rect) const {
+  if (!contains(design_.die, rect)) return false;
+  if (rectWidth(rect) != rectWidth(cell.original) ||
+      rectHeight(rect) != rectHeight(cell.original)) {
+    return false;
+  }
+
+  size_t start_row = 0;
+  if (!rowIndexForY(rect.y_min, start_row)) return false;
+  const int64_t row_span = rectHeight(rect) / design_.site_height;
+  if (row_span <= 0 || start_row + static_cast<size_t>(row_span) > rows_.size()) {
+    return false;
+  }
+
+  bool fixed_free = false;
+  for (const RowInterval& interval : commonFreeIntervals(start_row, row_span)) {
+    if (intervalContains(interval, rect.x_min, rectWidth(rect))) {
+      fixed_free = true;
+      break;
+    }
+  }
+  if (!fixed_free) return false;
+
+  for (int64_t offset = 0; offset < row_span; ++offset) {
+    if (segmentOverlaps(occupancy_[start_row + static_cast<size_t>(offset)],
+                        rect.x_min, rect.x_max)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<size_t> Legalizer::overlappingPlacedCells(const Rect& rect,
+                                                      size_t ignore_index,
+                                                      size_t limit) const {
+  std::vector<size_t> out;
+  for (size_t i = 0; i < design_.cells.size(); ++i) {
+    if (i == ignore_index) continue;
+    const Cell& cell = design_.cells[i];
+    if (!cell.has_placement) continue;
+    if (!intersects(rect, cell.placed)) continue;
+    out.push_back(i);
+    if (out.size() > limit) break;
+  }
+  return out;
+}
+
+double Legalizer::displacementCost(const Cell& cell, const Rect& rect) const {
+  const double disp_um =
+      static_cast<double>(manhattanDisplacement(cell.original, rect)) /
+      static_cast<double>(design_.dbu_per_micron);
+  return disp_um * kNormFactor;
+}
+
+void Legalizer::commit(size_t cell_index, const Candidate& candidate) {
+  Cell& cell = design_.cells[cell_index];
+  cell.placed = makeRect(candidate.x, candidate.y, rectWidth(cell.original),
+                         rectHeight(cell.original));
+  cell.has_placement = true;
+
+  addOccupancy(cell.placed, candidate.row_index);
   density_.commit(cell.placed);
+}
+
+bool Legalizer::evaluateEmptyRefinement(size_t cell_index,
+                                        const Rect& old_rect,
+                                        const Rect& new_rect,
+                                        RefinementMove& best,
+                                        bool& has_best) const {
+  const Cell& cell = design_.cells[cell_index];
+  const double old_disp = displacementCost(cell, old_rect);
+  const double new_disp = displacementCost(cell, new_rect);
+  if (new_disp + 1e-9 >= old_disp) return false;
+
+  const double old_density = density_.scoreCandidate(old_rect);
+  const double new_density = density_.scoreCandidate(new_rect);
+  if (new_density > old_density + kDensityEps) return false;
+
+  const double old_total = alpha_ * old_disp + (1.0 - alpha_) * old_density;
+  const double new_total = alpha_ * new_disp + (1.0 - alpha_) * new_density;
+  if (new_total + 1e-9 >= old_total) return false;
+
+  RefinementMove move;
+  move.cell_rect = new_rect;
+  move.max_displacement_cost = new_disp;
+  move.total_displacement_cost = new_disp;
+  move.density_cost = new_density;
+  move.total_cost = new_total;
+  if (!has_best || isBetterRefinement(move, best)) {
+    best = move;
+    has_best = true;
+  }
+  return true;
+}
+
+bool Legalizer::evaluateSwapRefinement(size_t cell_index, size_t partner_index,
+                                       const Rect& old_rect,
+                                       const Rect& new_rect,
+                                       double outlier_threshold_um,
+                                       RefinementMove& best,
+                                       bool& has_best) {
+  const Cell& cell = design_.cells[cell_index];
+  const Cell& partner = design_.cells[partner_index];
+  const Rect partner_old = partner.placed;
+  size_t partner_row = 0;
+  if (!rowIndexForY(partner_old.y_min, partner_row)) return false;
+
+  removeOccupancy(partner_old, partner_row);
+  density_.uncommit(partner_old);
+
+  bool accepted = false;
+  if (placementIsLegalInCurrentOccupancy(cell, new_rect)) {
+    size_t new_row = 0;
+    if (rowIndexForY(new_rect.y_min, new_row)) {
+      const double new_cell_density = density_.scoreCandidate(new_rect);
+      addOccupancy(new_rect, new_row);
+      density_.commit(new_rect);
+
+      Candidate partner_best;
+      bool has_partner = false;
+      findBestPlacement(partner_index, kPartnerRowBudget, 96, partner_best,
+                        has_partner);
+
+      density_.uncommit(new_rect);
+      removeOccupancy(new_rect, new_row);
+
+      if (has_partner) {
+        const Rect partner_new =
+            makeRect(partner_best.x, partner_best.y, rectWidth(partner.original),
+                     rectHeight(partner.original));
+        if (!intersects(new_rect, partner_new)) {
+          const double old_cell_disp = displacementCost(cell, old_rect);
+          const double old_partner_disp = displacementCost(partner, partner_old);
+          const double new_cell_disp = displacementCost(cell, new_rect);
+          const double new_partner_disp = displacementCost(partner, partner_new);
+          const double severe_limit = outlier_threshold_um * kNormFactor;
+          if (new_partner_disp <= severe_limit + 1e-9 &&
+              std::max(new_cell_disp, new_partner_disp) + 1e-9 <
+                  std::max(old_cell_disp, old_partner_disp) &&
+              new_cell_disp + new_partner_disp + 1e-9 <
+                  old_cell_disp + old_partner_disp) {
+            const double old_cell_density = density_.scoreCandidate(old_rect);
+            density_.commit(old_rect);
+            const double old_partner_density = density_.scoreCandidate(partner_old);
+            density_.uncommit(old_rect);
+
+            const double old_density = old_cell_density + old_partner_density;
+            const double new_density = new_cell_density + partner_best.density_cost;
+            if (new_density <= old_density + kDensityEps) {
+              const double old_total =
+                  alpha_ * (old_cell_disp + old_partner_disp) +
+                  (1.0 - alpha_) * old_density;
+              const double new_total =
+                  alpha_ * (new_cell_disp + new_partner_disp) +
+                  (1.0 - alpha_) * new_density;
+              if (new_total + 1e-9 < old_total) {
+                RefinementMove move;
+                move.swaps_partner = true;
+                move.partner_index = partner_index;
+                move.cell_rect = new_rect;
+                move.partner_rect = partner_new;
+                move.max_displacement_cost =
+                    std::max(new_cell_disp, new_partner_disp);
+                move.total_displacement_cost = new_cell_disp + new_partner_disp;
+                move.density_cost = new_density;
+                move.total_cost = new_total;
+                if (!has_best || isBetterRefinement(move, best)) {
+                  best = move;
+                  has_best = true;
+                }
+                accepted = true;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  density_.commit(partner_old);
+  addOccupancy(partner_old, partner_row);
+  return accepted;
+}
+
+bool Legalizer::tryRefineOutlier(size_t cell_index,
+                                 double outlier_threshold_um) {
+  Cell& cell = design_.cells[cell_index];
+  const Rect old_rect = cell.placed;
+  size_t old_row = 0;
+  if (!rowIndexForY(old_rect.y_min, old_row)) return false;
+
+  removeOccupancy(old_rect, old_row);
+  density_.uncommit(old_rect);
+
+  RefinementMove best;
+  bool has_best = false;
+  const int64_t old_disp_dbu = manhattanDisplacement(cell.original, old_rect);
+  const int64_t dynamic_radius =
+      std::min<int64_t>(4096, std::max<int64_t>(
+                                  256, ceilDiv(old_disp_dbu, design_.site_width) +
+                                           64));
+
+  size_t rows_seen = 0;
+  const int64_t row_span = rectHeight(cell.original) / design_.site_height;
+  for (size_t row_index : rowOrderForCell(cell)) {
+    if (++rows_seen > kRefinementRowBudget) break;
+    const std::vector<RowInterval> fixed_intervals =
+        commonFreeIntervals(row_index, row_span);
+    for (const RowInterval& interval : fixed_intervals) {
+      const std::vector<int64_t> xs = xCandidatesForInterval(
+          cell, interval, rectWidth(cell.original), dynamic_radius);
+      for (int64_t x : xs) {
+        const Rect new_rect =
+            makeRect(x, rows_[row_index].y, rectWidth(cell.original),
+                     rectHeight(cell.original));
+        if (new_rect.x_min == old_rect.x_min &&
+            new_rect.y_min == old_rect.y_min) {
+          continue;
+        }
+        if (!contains(design_.die, new_rect)) continue;
+
+        const std::vector<size_t> blockers =
+            overlappingPlacedCells(new_rect, cell_index, 1);
+        if (blockers.empty()) {
+          if (!placementIsLegalInCurrentOccupancy(cell, new_rect)) continue;
+          evaluateEmptyRefinement(cell_index, old_rect, new_rect, best, has_best);
+        } else if (blockers.size() == 1) {
+          evaluateSwapRefinement(cell_index, blockers[0], old_rect, new_rect,
+                                 outlier_threshold_um, best, has_best);
+        }
+      }
+    }
+  }
+
+  if (!has_best) {
+    density_.commit(old_rect);
+    addOccupancy(old_rect, old_row);
+    return false;
+  }
+
+  if (best.swaps_partner) {
+    Cell& partner = design_.cells[best.partner_index];
+    const Rect partner_old = partner.placed;
+    size_t partner_old_row = 0;
+    rowIndexForY(partner_old.y_min, partner_old_row);
+    removeOccupancy(partner_old, partner_old_row);
+    density_.uncommit(partner_old);
+
+    cell.placed = best.cell_rect;
+    size_t new_row = 0;
+    rowIndexForY(best.cell_rect.y_min, new_row);
+    density_.commit(best.cell_rect);
+    addOccupancy(best.cell_rect, new_row);
+
+    partner.placed = best.partner_rect;
+    size_t partner_new_row = 0;
+    rowIndexForY(best.partner_rect.y_min, partner_new_row);
+    density_.commit(best.partner_rect);
+    addOccupancy(best.partner_rect, partner_new_row);
+  } else {
+    cell.placed = best.cell_rect;
+    size_t new_row = 0;
+    rowIndexForY(best.cell_rect.y_min, new_row);
+    density_.commit(best.cell_rect);
+    addOccupancy(best.cell_rect, new_row);
+  }
+
+  return true;
+}
+
+bool Legalizer::refineOutliers() {
+  bool changed_any = false;
+  for (size_t round = 0; round < kMaxRefinementRounds; ++round) {
+    double total_um = 0.0;
+    std::vector<std::pair<double, size_t>> outliers;
+    outliers.reserve(design_.cells.size());
+    for (size_t i = 0; i < design_.cells.size(); ++i) {
+      const Cell& cell = design_.cells[i];
+      const double disp_um =
+          static_cast<double>(manhattanDisplacement(cell.original, cell.placed)) /
+          static_cast<double>(design_.dbu_per_micron);
+      total_um += disp_um;
+      outliers.push_back({disp_um, i});
+    }
+
+    const double avg_um =
+        design_.cells.empty() ? 0.0 : total_um / design_.cells.size();
+    const double threshold_um = std::max(45.0, 3.0 * avg_um);
+    outliers.erase(std::remove_if(outliers.begin(), outliers.end(),
+                                  [threshold_um](const auto& item) {
+                                    return item.first <= threshold_um;
+                                  }),
+                   outliers.end());
+    if (outliers.empty()) break;
+
+    std::stable_sort(outliers.begin(), outliers.end(),
+                     [this](const auto& a, const auto& b) {
+                       if (a.first != b.first) return a.first > b.first;
+                       return design_.cells[a.second].input_index <
+                              design_.cells[b.second].input_index;
+                     });
+    if (outliers.size() > kMaxRefinementOutliers) {
+      outliers.resize(kMaxRefinementOutliers);
+    }
+
+    bool round_changed = false;
+    for (const auto& item : outliers) {
+      const size_t cell_index = item.second;
+      const Cell& cell = design_.cells[cell_index];
+      const double current_um =
+          static_cast<double>(manhattanDisplacement(cell.original, cell.placed)) /
+          static_cast<double>(design_.dbu_per_micron);
+      if (current_um <= threshold_um) continue;
+      if (tryRefineOutlier(cell_index, threshold_um)) {
+        round_changed = true;
+        changed_any = true;
+      }
+    }
+    if (!round_changed) break;
+  }
+  return changed_any;
 }
 
 bool Legalizer::legalize(std::string& error) {
@@ -251,15 +653,9 @@ bool Legalizer::legalize(std::string& error) {
 
     Candidate best;
     bool has_best = false;
-    const std::vector<size_t> row_order = rowOrderForCell(cell);
     const size_t row_budget = (alpha_ < 0.20) ? 96 : ((alpha_ < 0.60) ? 64 : 32);
-    size_t feasible_rows_seen = 0;
-    for (size_t row_index : row_order) {
-      if (evaluateCandidatesForRow(cell_index, row_index, best, has_best)) {
-        ++feasible_rows_seen;
-        if (has_best && feasible_rows_seen >= row_budget) break;
-      }
-    }
+    findBestPlacement(cell_index, row_budget, kInitialRadiusSites, best,
+                      has_best);
 
     if (!has_best) {
       error = "cannot place cell " + cell.name + " (" +
@@ -271,6 +667,7 @@ bool Legalizer::legalize(std::string& error) {
     commit(cell_index, best);
   }
 
+  refineOutliers();
   return true;
 }
 
