@@ -1,325 +1,219 @@
-# Vibe Coding Prompt: Placement Legalizer for OpenROAD
+# Vibe Coding Prompt: Reduce Max Displacement Tail
 
 ## Objective
 
-Implement the full C++17 solution for Programming Assignment #3, "Placement with OpenROAD," in this repository. The final project must build a root-level `Legalizer` executable with `make`, run as:
+Improve the existing C++17 OpenROAD placement legalizer for the current benchmark/parameter setting by reducing the high-displacement tail after greedy placement. Focus on maximum displacement and high-percentile displacement, not DOR. Preserve all existing legality guarantees, CLI behavior, deterministic output, and build/test workflow.
 
-```sh
-./Legalizer <alpha> <threshold> <input>.gp <output>.tcl
-```
+The most useful next tuning target is the max displacement tail: after the first greedy placement, add a local repair pass for cells with very high displacement, or change ordering/candidate selection so early cells do not occupy near-original slots that later constrained cells need.
 
-and produce an OpenROAD TCL script with direct `place_cell` commands that legalize all movable standard cells. The placement must keep cells inside the die, aligned to site rows, non-overlapping with cells/macros/blockages, and competitive on the assignment quality metric:
-
-```text
-Quality = alpha * Average Displacement + (1 - alpha) * DOR
-```
-
-The generated TCL must never invoke `detailed_placement`, and every emitted placement must keep orientation `R0`.
+Do not spend this run retuning density overflow reduction. Keep DOR behavior from regressing badly, but treat average/max displacement as the main optimization target.
 
 ## Inputs
 
-Read these files first, in this order:
+Read these files first:
 
-- `p3_placement.pdf`: official assignment specification, including input format, output format, CLI contract, grading policy, and prohibited commands.
-- `doc/proposal.md`: project objective, assumptions, proposed approach, validation plan.
-- `doc/high-level-design.md`: architecture, module boundaries, data flow, contracts.
-- `doc/detailed-design.md`: detailed module designs, cross-module contracts, test strategy, risks, and open questions.
-- `doc/tasks/progress.md`: overall module checklist.
-- `doc/tasks/cli-driver.md`
-- `doc/tasks/gp-parser.md`
-- `doc/tasks/placement-model.md`
-- `doc/tasks/row-interval-builder.md`
-- `doc/tasks/legalizer.md`
-- `doc/tasks/density-estimator.md`
-- `doc/tasks/tcl-writer.md`
-- `doc/tasks/test-fixtures.md`
-- `README.md`: expected build, run, and test commands.
-- `extract.tcl`: authoritative `.gp` extraction format used by OpenROAD.
-- `flow.tcl`: public validation flow and scoring script.
-- `public/ispd19_sample/` and `public/ispd15_mgc_matrix_mult_a/`: public LEF/DEF benchmarks for final OpenROAD validation.
+- `doc/proposal.md`: original assignment goal and quality metric.
+- `doc/high-level-design.md`: module boundaries and data flow.
+- `doc/detailed-design.md`: detailed legalizer, density, row, parser, and writer contracts.
+- `doc/tasks/progress.md`: confirms all baseline modules are already implemented.
+- `doc/tasks/legalizer.md`: current legalizer task scope and completed baseline requirements.
+- `README.md`: build, run, and test commands.
+- `Makefile`: actual C++17 build and `make test` target.
+- `src/legalizer.hpp`
+- `src/legalizer.cpp`
+- `src/density_estimator.hpp`
+- `src/density_estimator.cpp`
+- `src/row_interval_builder.hpp`
+- `src/row_interval_builder.cpp`
+- `src/placement_model.hpp`
+- `src/placement_model.cpp`
+- `tests/test_legalizer.cpp`
+- `flow.tcl`: authoritative OpenROAD legality and scoring flow when OpenROAD is available.
+
+Useful public benchmark folders:
+
+- `public/ispd19_sample/`
+- `public/ispd15_mgc_matrix_mult_a/`
 
 ## Current Implementation
 
-The checkout currently contains planning docs, assignment/support files, public benchmarks, and an existing root-level `Legalizer` binary, but it does not contain the source tree or `Makefile` described by `README.md`. Treat the binary as an old build artifact only. Reconstruct the source project from the planning docs.
+The repo already contains a working C++17 legalizer. Do not reconstruct the project from scratch.
 
-Observed repository state:
+Actual source layout:
 
-- `p3_placement.pdf` defines the assignment due May 25, 2026.
-- `extract.tcl` emits `.gp` files with:
-  - `DBU_Per_Micron <integer>`
-  - `DieArea_LL <x> <y>`
-  - `DieArea_UR <x> <y>`
-  - `Site_Width <integer>`
-  - `Site_Height <integer>`
-  - blank line
-  - `Name LLX LLY Width Height Type`
-  - instance rows where `CELL` is movable, `MACRO` is fixed, and `BLOCKAGE` is fixed.
-- `flow.tcl` currently demonstrates the validation/scoring flow. It performs global placement, sources `extract.tcl`, records original locations, then should be adapted during local validation to run `make`, execute `./Legalizer <alpha> <threshold> <input>.gp <output>.tcl`, source the generated TCL, run `check_placement -verbose`, and compute displacement/DOR.
-- `README.md` expects:
-  - `make`
-  - `./Legalizer <alpha> <threshold> <input.gp> <output.tcl>`
-  - `make test`
-- `.gitignore` already ignores `Legalizer`, objects, test binaries, generated `.gp`, logs, reports, and local cache directories.
-- There is no current `src/`, `tests/`, or `Makefile`; create them.
+- `Makefile` builds a root-level `Legalizer` executable with `g++ -std=c++17 -O2 -Wall -Wextra -pedantic -Isrc`.
+- `make test` builds `tests/test_legalizer` and runs a one-cell CLI smoke test.
+- `src/main.cpp` parses `Legalizer <alpha> <threshold> <input.gp> <output.tcl>`, loads a `Design`, validates it, builds row intervals, creates `DensityEstimator`, runs `Legalizer::legalize`, and writes TCL.
+- `src/placement_model.*` stores DBU geometry, half-open rectangles, site snapping helpers, displacement, and design validation.
+- `src/gp_parser.*` parses `.gp` metadata and `CELL`/`MACRO`/`BLOCKAGE` instances.
+- `src/row_interval_builder.*` creates per-row legal X intervals and subtracts fixed obstacles.
+- `src/density_estimator.*` tracks 10 micron grid occupancy and scores density overflow candidates.
+- `src/tcl_writer.*` emits one `place_cell -inst_name <name> -orient R0 -origin {X Y}` command per movable cell, converting DBU to microns.
+- `src/legalizer.*` owns greedy row-based placement.
 
-Assignment constraints to preserve exactly:
+Current `Legalizer` behavior:
 
-- Language/platform: C or C++ preferred; use C++17 on Linux.
-- TA command:
+- `placementOrder()` sorts cells by descending area, descending height, original Y, original X, and input index.
+- `rowOrderForCell()` sorts legal starting rows by vertical distance from the cell's original Y.
+- `evaluateCandidatesForRow()` computes common free intervals across the cell's row span, subtracts committed occupancy, and tries a small set of site-aligned X candidates:
+  - snapped preferred X,
+  - snapped-up preferred X,
+  - interval start,
+  - interval end,
+  - plus/minus 1 through 5 site widths around preferred X.
+- Candidate cost is `alpha * displacement_cost + (1 - alpha) * density_cost`, with displacement measured in microns and scaled by `kNormFactor = 18.2`.
+- `legalize()` searches a row budget of 32/64/96 feasible rows based on `alpha`, commits each chosen placement immediately, and fails with a named cell diagnostic if no candidate is found.
+- Row occupancy is tracked as sorted horizontal segments per row.
+- Multi-height cells are supported when height is a multiple of site height by intersecting row intervals and updating occupancy across all covered rows.
 
-  ```sh
-  make
-  ./Legalizer <alpha> <threshold> <input>.gp <output>.tcl
-  ```
+Known tuning issue:
 
-- Output format:
+- Greedy placement can create a long max-displacement tail. Early cells sometimes take near-original legal slots that later cells with tighter row/interval constraints need, forcing those later cells far away.
+- The current candidate generator is local and sparse, so a cell may miss a slightly farther slot that would lower global displacement pressure.
+- There is no post-placement repair or swap pass.
 
-  ```tcl
-  place_cell -inst_name <instName> -orient R0 -origin {X Y}
-  ```
-
-- Output coordinates are in microns; internal geometry should remain in DBU until TCL writing.
-- No cell rotation.
-- No `detailed_placement` in generated output TCL.
-- Runtime must stay below 30 minutes per benchmark.
-- DOR uses 10 micron by 10 micron grids; grids occupied by fixed macros are excluded from the grading grid count.
-- `flow.tcl` uses `norm_factor 18.2` when calculating normalized displacement for quality.
-
-Important workspace constraint:
+Workspace constraint:
 
 - Do not delete files or directories in batch. Do not use `rm -rf`, `rmdir /s`, `Remove-Item -Recurse`, `rd /s`, or `del /s`. If cleanup is needed, delete only one explicit file path at a time, or ask the user to delete batch artifacts manually.
 
 ## Execution Model
 
-Operate autonomously and finish the implementation end to end. The main agent owns overall progress, updates the task checklists, decomposes work by module, spawns worker subagents where independent implementation slices are useful, integrates their changes, resolves build/test issues, and completes the repository without human-in-the-loop checkpoints unless truly blocked.
+Operate autonomously and complete the tuning implementation end to end. The main agent owns overall progress, decomposes work into bounded modules, spawns subagents where useful for independent analysis or test work, integrates all results, and completes without human-in-the-loop checkpoints unless truly blocked.
 
-When spawning worker agents, give them disjoint write scopes. Tell every worker that they are not alone in the codebase, must not revert edits made by others, and must adapt to concurrent changes. The main agent remains responsible for final integration, quality gates, and consistency.
+When spawning worker agents, use disjoint write scopes. Tell workers they are not alone in the codebase, must not revert edits made by others, and should adapt to concurrent changes. The main agent remains responsible for final design consistency, legality, benchmark validation, and quality gates.
 
-Use conservative engineering judgment when details are ambiguous. Prefer legal, deterministic placements over risky quality tuning. Ask a concise question only if implementation cannot safely proceed from the assignment docs and repository facts.
+Prefer conservative changes that improve displacement tail while preserving the simple deterministic architecture. Do not introduce hidden benchmark-specific constants tied to cell names or absolute design dimensions.
 
 ## Module Plan
 
-### Workstream 1: Build System and CLI Driver
+### Workstream 1: Measure and Characterize Displacement Tail
 
 Owned files:
 
-- `Makefile`
-- `src/main.cpp`
-- `src/cli.*` if a separate driver abstraction is useful
-- related CLI tests in `tests/`
+- `tests/test_legalizer.cpp`
+- optional small fixtures under `tests/`
+- optional documentation notes in `doc/`
 
-Implement:
+Implement or run:
 
-- C++17 build that creates `./Legalizer` in the repository root.
-- `make test` target that builds and runs `tests/test_legalizer`.
-- Exact CLI argument contract: four user arguments, `alpha`, `threshold`, input path, output path.
-- Full-string numeric parsing for `alpha` and `threshold`.
-- Non-zero exits with concise `stderr` diagnostics for bad arguments, parse failures, legalization failures, and output failures.
-- Orchestration: parse GP, validate model, build rows, create density estimator, legalize, write TCL.
+- Add test/helper logic that computes per-cell Manhattan displacement in DBU or microns after legalization.
+- Create a focused in-memory fixture that reproduces the tail pattern: an early flexible cell can take a near-original slot, while a later constrained cell then gets pushed far away.
+- Assert that the repair/order improvement reduces the constrained cell's displacement or max displacement without violating legality.
+- Keep tests deterministic and independent of OpenROAD.
 
-### Workstream 2: Placement Model and Geometry
+Do not make tests brittle by depending on exact placements for unrelated cells unless needed to prove the tail fix.
 
-Owned files:
-
-- `src/placement_model.hpp`
-- `src/placement_model.cpp`
-- model/geometry tests in `tests/`
-
-Implement:
-
-- `Rect`, `InstanceType`, `Cell`, `Obstacle`, `Design`, final placement state, and shared legal row types.
-- Signed 64-bit DBU coordinates.
-- Half-open rectangle convention: `[x_min, x_max) x [y_min, y_max)`.
-- Helpers for width, height, intersection, containment, clipping, site snapping, row index/Y conversion, and displacement.
-- Model validation for die/site dimensions, duplicate movable names, invalid dimensions, and unsupported cell heights.
-- Support standard single-height cells first. If multi-height movable cells appear, either extend row occupancy across all covered rows or fail explicitly with a clear unsupported-cell diagnostic. Prefer implementing robust multi-row occupancy if feasible without destabilizing the solution.
-
-### Workstream 3: GP Parser
-
-Owned files:
-
-- `src/gp_parser.hpp`
-- `src/gp_parser.cpp`
-- parser fixtures/tests in `tests/`
-
-Implement:
-
-- Strict parsing of `DBU_Per_Micron`, `DieArea_LL`, `DieArea_UR`, `Site_Width`, and `Site_Height`.
-- Accept blank lines before the `Name LLX LLY Width Height Type` header.
-- Parse `CELL` as movable and `MACRO`/`BLOCKAGE` as fixed obstacles.
-- Preserve movable-cell input order for deterministic TCL output.
-- Reject malformed integers, missing metadata/header, non-positive dimensions, and unknown instance types with line context.
-- Allow obstacle coordinates outside the die; row interval construction will clip them.
-
-### Workstream 4: Row Interval Builder
-
-Owned files:
-
-- `src/row_interval_builder.hpp`
-- `src/row_interval_builder.cpp`
-- row interval tests in `tests/`
-
-Implement:
-
-- Generate site rows from `die.y_min` to `die.y_max` by `site_height`.
-- Initialize each row with legal X capacity inside the die.
-- Clip every fixed `MACRO` and `BLOCKAGE` to the die.
-- For each obstacle intersecting a row span, subtract its horizontal span conservatively.
-- Snap interval boundaries inward to valid site-aligned starts.
-- Remove intervals too small for placement and merge only truly contiguous site-aligned intervals.
-- Represent empty rows safely.
-
-### Workstream 5: Density Estimator
-
-Owned files:
-
-- `src/density_estimator.hpp`
-- `src/density_estimator.cpp`
-- density tests in `tests/`
-
-Implement:
-
-- 10 micron grid size: `10 * dbu_per_micron`.
-- Per-grid macro-covered area, movable occupied area, and optional blockage occupancy for scoring only.
-- Exclude fully macro-covered grids from overflow scoring when practical.
-- Candidate scoring by intersecting the candidate rectangle with affected grids and estimating threshold overflow.
-- Commit update after final placement.
-- Normalize penalty to a percentage-like scale compatible with displacement scoring.
-- Avoid excessive memory on large designs; switch to sparse storage or bounded dense allocation when needed.
-
-### Workstream 6: Legalizer
+### Workstream 2: Local Repair Pass After Greedy Placement
 
 Owned files:
 
 - `src/legalizer.hpp`
 - `src/legalizer.cpp`
-- legalizer tests in `tests/`
+- legalizer-focused tests in `tests/test_legalizer.cpp`
 
-Implement:
+Implement a local displacement-tail repair pass after the first greedy pass. Recommended shape:
 
-- Deterministic placement order: harder/larger/constrained cells first, stable by original coordinates and input order.
-- Candidate row generation in increasing vertical distance from original Y.
-- Candidate X generation inside legal intervals around original X, snapped to site width.
-- Row occupancy structure for committed cells.
-- Rejection of candidates outside die, outside row intervals, overlapping already placed cells, or conflicting with fixed obstacles.
-- Score candidates with `alpha`-weighted displacement and density penalty. Use `norm_factor 18.2` as a useful scale for displacement in candidate scoring because `flow.tcl` uses it in final quality.
-- Fallback exhaustive search across rows/intervals if local search cannot place a cell.
-- Clear failure diagnostic naming the unplaceable cell and dimensions.
-- Commit chosen placement by updating cell rectangle, row occupancy, and density estimator.
+- Track or reconstruct enough occupancy to temporarily remove and reinsert cells.
+- Identify tail cells by displacement, for example max displacement cells or cells above a high percentile / multiple of median or average.
+- For each tail cell, try bounded local improvements:
+  - remove the tail cell from occupancy and density state if density state can be rebuilt safely,
+  - search a wider candidate set near its original location,
+  - optionally move one blocking cell to another nearby legal slot if that reduces max displacement and does not increase total displacement excessively,
+  - commit only improvements that preserve legality and deterministic tie-breaking.
+- Keep the pass bounded by a small iteration count and candidate budget so runtime remains safely below the 30 minute assignment timeout.
 
-### Workstream 7: TCL Writer
+If `DensityEstimator` cannot easily support rollback, prefer a repair design that rebuilds density from scratch after accepted moves, or run the repair with displacement-dominant scoring and then rebuild final density state before any later candidate scoring. Do not leave density state inconsistent with final placements.
+
+The repair pass should optimize these priorities in order:
+
+1. Reduce maximum displacement.
+2. Reduce high-percentile or top-K displacement.
+3. Avoid increasing average displacement materially.
+4. Avoid major DOR regression.
+
+### Workstream 3: Candidate Selection and Ordering Improvements
 
 Owned files:
 
-- `src/tcl_writer.hpp`
-- `src/tcl_writer.cpp`
-- writer tests in `tests/`
+- `src/legalizer.hpp`
+- `src/legalizer.cpp`
+- tests in `tests/test_legalizer.cpp`
 
-Implement:
+Improve the first greedy pass so it avoids creating the tail where practical:
 
-- Open requested output path and report I/O errors.
-- Require every movable cell to have a final placement.
-- Convert DBU to microns using `DBU_Per_Micron`.
-- Emit exactly one command per movable `CELL`, in input order:
+- Add a cell difficulty/constrainedness signal to `placementOrder()`, such as number/width of feasible row intervals near the original row, local obstacle pressure, cell width, row span, or available nearby capacity.
+- Consider placing constrained cells earlier than flexible cells even when area is similar.
+- Expand X candidate generation beyond plus/minus 5 sites in a controlled way. For example, sample nearest legal starts around the preferred X from interval boundaries and occupancy gaps, or grow the step budget based on cell width / site width.
+- Preserve deterministic tie-breaking by cost, displacement, Y, X, and input index where relevant.
 
-  ```tcl
-  place_cell -inst_name <instName> -orient R0 -origin {X Y}
-  ```
+Keep this workstream focused on displacement. Do not make density penalty dominate when `alpha` is high or when the user is tuning max displacement.
 
-- Format numeric values without unnecessary floating-point noise.
-- Validate or safely format instance names. Public examples use raw names; if bracing `-inst_name` is confirmed accepted by OpenROAD, bracing may be used for Tcl safety.
-- Ensure output never contains `detailed_placement`.
-
-### Workstream 8: Test Fixtures and Validation
+### Workstream 4: Legality and Regression Protection
 
 Owned files:
 
 - `tests/test_legalizer.cpp`
-- `tests/fixtures/*.gp`
-- optional validation notes under `doc/`
+- optionally `src/legalizer.cpp` internal validation helpers if useful
 
-Implement:
+Add focused regression checks:
 
-- Lightweight C++ tests with no OpenROAD dependency.
-- Fixtures for:
-  - one-cell valid parse/legalization
-  - macro splitting a row
-  - boundary blockage
-  - density threshold behavior
-  - overfull failure
-  - malformed parser cases
-- End-to-end smoke test that runs the module pipeline on a tiny `.gp`.
-- `make test` must run all tests.
-- Document public OpenROAD validation commands for both public benchmarks and at least two parameter settings.
+- Every placed cell remains inside `design.die`.
+- X is aligned to `site_width` from `die.x_min`.
+- Y is aligned to `site_height` from `die.y_min`.
+- Movable cells do not overlap each other.
+- Movable cells do not overlap fixed `MACRO` or `BLOCKAGE` rectangles.
+- Multi-row occupancy remains correct for multi-height cells.
+- Output behavior remains unchanged: `TclWriter` still emits no `detailed_placement` command.
+
+Prefer reusable test helper functions for legality checks so new repair tests stay readable.
 
 ## Testing and Quality Gates
 
-The final implementation must pass the repository's actual gates:
+The final implementation must pass:
 
 ```sh
 make
 make test
 ```
 
-Also run focused executable smoke tests on tiny fixtures:
+Also run at least one CLI smoke test:
 
 ```sh
-./Legalizer 0.7 45 tests/fixtures/one_cell.gp /tmp/one_cell.tcl
+./Legalizer 0.7 45 tests/fixture_one_cell.gp /tmp/one_cell_tail_repair.tcl
 ```
 
-Validate generated TCL content:
+Verify the smoke-test output does not contain the prohibited command:
 
 ```sh
-grep -n "detailed_placement" /tmp/one_cell.tcl
+grep -n "detailed_placement" /tmp/one_cell_tail_repair.tcl
 ```
 
-The grep should find nothing.
+The grep should produce no matches.
 
-If OpenROAD is available in the environment, validate with public benchmarks through `flow.tcl`. Use both public cases:
+If OpenROAD is available, run `flow.tcl` or the repository's established OpenROAD validation flow on the specific benchmark/setting the user is tuning. Record before/after metrics:
 
-- `public/ispd19_sample`
-- `public/ispd15_mgc_matrix_mult_a`
+- total displacement,
+- average displacement,
+- maximum displacement if available or computed from original/final locations,
+- top-K or high-percentile displacement if available,
+- DOR,
+- final quality.
 
-Run at least two parameter configurations:
-
-- displacement-heavy, for example higher `alpha`
-- density-heavy, for example lower `alpha`
-
-The OpenROAD validation must check:
-
-- `check_placement -verbose` reports legality pass.
-- No cell overlaps.
-- No cell outside the die.
-- All movable cells aligned to legal rows/sites.
-- All emitted orientations are `R0`.
-- Generated TCL contains no `detailed_placement`.
-- Runtime is below 30 minutes per benchmark.
-- `flow.tcl` reports total displacement, average displacement, DOR, normalized displacement, and final quality score.
-
-If OpenROAD is not installed or cannot run in the current environment, report that explicitly and still complete `make`, `make test`, and fixture smoke tests.
+The key success metric is lower max/top-tail displacement for the same benchmark/setting. DOR does not need to improve.
 
 ## Acceptance Criteria
 
-The implementation is complete when:
-
-- `Makefile`, `src/`, and `tests/` exist and are coherent.
-- `make` creates a root-level `./Legalizer`.
-- `make test` passes.
-- The executable accepts the exact TA CLI and uses the exact filenames provided by the caller.
-- `.gp` parsing supports the assignment format produced by `extract.tcl`.
-- Every movable `CELL` receives one legal final placement or the executable fails with a clear diagnostic.
-- Final placements are inside the die, site-aligned, fixed-obstacle-free, and mutually non-overlapping under the internal legality checks.
-- Output TCL contains exactly one `place_cell` command per movable `CELL`, uses `-orient R0`, converts DBU to microns, and contains no `detailed_placement`.
-- Unit tests cover parser, geometry/model validation, row intervals, density accounting, writer formatting, and simple legalizer behavior.
-- `doc/tasks/progress.md` and the individual task files are updated to reflect completed work.
-- Any public benchmark validation results or inability to run OpenROAD are documented in the final report.
+- `doc/prompt.md` remains a standalone implementation prompt and accurately reflects the current source tree.
+- `src/legalizer.*` implements a deterministic displacement-tail improvement through local repair, better ordering/candidate selection, or both.
+- The implementation does not rely on hard-coded benchmark cell names, absolute coordinates, or hidden benchmark constants.
+- All existing legality guarantees are preserved.
+- Focused tests cover the displacement-tail scenario and prove the new logic improves it.
+- `make` and `make test` pass.
+- The CLI smoke test passes and generated TCL contains only direct `place_cell` commands.
+- If OpenROAD is available, benchmark notes show max/top-tail displacement improved or explain why the local unit proxy passed but OpenROAD validation could not be run.
 
 ## Uncertainty Protocol
 
-Known uncertainties from `doc/detailed-design.md`:
+Make conservative assumptions and continue unless blocked. If the exact benchmark/setting is not encoded in the repo, tune against the available public fixtures and small synthetic tail tests, then leave clear instructions for running the same binary on the user's intended benchmark/setting.
 
-- Hidden benchmarks may include movable cells taller than one site row. Prefer supporting multi-row cells if practical; otherwise detect them early and fail clearly rather than producing illegal placements.
-- Tcl-special instance names may require braced `-inst_name` values. Confirm against OpenROAD if possible; otherwise use the public sample-compatible raw format and validate names.
-- DOR excludes fixed macro regions. Treat `MACRO` regions as excluded in density scoring; treat `BLOCKAGE` as a legality obstacle and optional density penalty, not necessarily an excluded grid category.
-
-When uncertain, make conservative assumptions that preserve legality, determinism, and the assignment contract. Do not stop for user input unless the ambiguity blocks implementation or risks violating the assignment rules.
+If a proposed repair reduces max displacement but causes a severe average displacement or DOR regression, prefer a smaller bounded repair and document the tradeoff. Ask the user only if two viable approaches require choosing between substantially lower max displacement and substantially worse overall quality.

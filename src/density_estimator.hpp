@@ -14,6 +14,7 @@ class DensityEstimator {
 
   double scoreCandidate(const Rect& rect) const;
   void commit(const Rect& rect);
+  void rebuildMovableOccupancy();
 
   int64_t gridSize() const { return grid_size_; }
 

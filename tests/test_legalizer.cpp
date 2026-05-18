@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -19,6 +20,32 @@ void require(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << "FAIL: " << message << "\n";
     std::exit(1);
+  }
+}
+
+double displacementUm(const Design& d, const Cell& cell) {
+  return static_cast<double>(manhattanDisplacement(cell.original, cell.placed)) /
+         static_cast<double>(d.dbu_per_micron);
+}
+
+void requireLegalPlacement(const Design& d) {
+  for (const Cell& cell : d.cells) {
+    require(cell.has_placement, "cell has placement: " + cell.name);
+    require(contains(d.die, cell.placed), "cell inside die: " + cell.name);
+    require((cell.placed.x_min - d.die.x_min) % d.site_width == 0,
+            "cell x aligned: " + cell.name);
+    require((cell.placed.y_min - d.die.y_min) % d.site_height == 0,
+            "cell y aligned: " + cell.name);
+    for (const Obstacle& obstacle : d.obstacles) {
+      require(!intersects(cell.placed, obstacle.rect),
+              "cell avoids obstacle: " + cell.name);
+    }
+  }
+  for (size_t i = 0; i < d.cells.size(); ++i) {
+    for (size_t j = i + 1; j < d.cells.size(); ++j) {
+      require(!intersects(d.cells[i].placed, d.cells[j].placed),
+              "movable cells do not overlap");
+    }
   }
 }
 
@@ -120,13 +147,7 @@ void testLegalizerAndWriter() {
   DensityEstimator density(d, 45.0);
   Legalizer legalizer(d, rows, density, 0.7);
   require(legalizer.legalize(error), "legalize succeeds: " + error);
-  require(d.cells[0].has_placement && d.cells[1].has_placement,
-          "cells placed");
-  require(contains(d.die, d.cells[0].placed), "placement inside die");
-  require(d.cells[0].placed.x_min % d.site_width == 0, "x site aligned");
-  require(d.cells[0].placed.y_min % d.site_height == 0, "y row aligned");
-  require(!intersects(d.cells[0].placed, d.cells[1].placed),
-          "placed cells do not overlap");
+  requireLegalPlacement(d);
 
   require(TclWriter::writeFile("tests/out_writer.tcl", d, error),
           "writer succeeds: " + error);
@@ -138,6 +159,36 @@ void testLegalizerAndWriter() {
           "writer command shape");
   require(text.find("detailed_placement") == std::string::npos,
           "writer never emits detailed placement");
+}
+
+void testConstrainedCellAvoidsTailDisplacement() {
+  Design d;
+  d.dbu_per_micron = 1000;
+  d.die = Rect{0, 0, 2000, 2000};
+  d.site_width = 100;
+  d.site_height = 1000;
+  d.cells.push_back(makeCell("flex", 0, 0, 1000, 1000, 0));
+  d.cells.push_back(makeCell("tight", 0, 0, 100, 2000, 1));
+  d.obstacles.push_back(
+      makeObstacle("row0_block", 100, 0, 1900, 1000, InstanceType::Blockage));
+
+  std::string error;
+  require(validateDesign(d, error), "tail fixture validates: " + error);
+  std::vector<LegalRow> rows;
+  require(RowIntervalBuilder::build(d, rows, error), "tail rows build: " + error);
+  DensityEstimator density(d, 45.0);
+  Legalizer legalizer(d, rows, density, 0.7);
+  require(legalizer.legalize(error), "tail legalize succeeds: " + error);
+  requireLegalPlacement(d);
+
+  const Cell& tight = d.cells[1];
+  require(tight.placed.x_min == 0 && tight.placed.y_min == 0,
+          "constrained multi-row cell keeps its only near-origin slot");
+  double max_disp = 0.0;
+  for (const Cell& cell : d.cells) {
+    max_disp = std::max(max_disp, displacementUm(d, cell));
+  }
+  require(max_disp <= 1.2, "tail displacement remains bounded");
 }
 
 void testOverfullFailure() {
@@ -163,6 +214,7 @@ int main() {
   testRows();
   testDensity();
   testLegalizerAndWriter();
+  testConstrainedCellAvoidsTailDisplacement();
   testOverfullFailure();
   std::cout << "All tests passed\n";
   return 0;

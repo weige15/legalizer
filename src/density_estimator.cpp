@@ -103,4 +103,13 @@ void DensityEstimator::commit(const Rect& rect) {
   addArea(intersection(rect, design_.die), false);
 }
 
+void DensityEstimator::rebuildMovableOccupancy() {
+  for (auto& entry : grids_) {
+    entry.second.movable_area = 0;
+  }
+  for (const Cell& cell : design_.cells) {
+    if (cell.has_placement) commit(cell.placed);
+  }
+}
+
 }  // namespace legalizer
