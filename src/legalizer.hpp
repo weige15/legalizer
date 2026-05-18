@@ -20,6 +20,7 @@ class Legalizer {
   struct Segment {
     int64_t x_min = 0;
     int64_t x_max = 0;
+    size_t cell_index = 0;
   };
 
   struct Candidate {
@@ -63,14 +64,14 @@ class Legalizer {
   bool isBetterRefinement(const RefinementMove& cand,
                           const RefinementMove& best) const;
   void commit(size_t cell_index, const Candidate& candidate);
-  void addOccupancy(const Rect& rect, size_t start_row);
+  void addOccupancy(size_t cell_index, const Rect& rect, size_t start_row);
   void removeOccupancy(const Rect& rect, size_t start_row);
   bool rowIndexForY(int64_t y, size_t& row_index) const;
   bool placementIsLegalInCurrentOccupancy(const Cell& cell,
                                           const Rect& rect) const;
-  std::vector<size_t> overlappingPlacedCells(const Rect& rect,
-                                             size_t ignore_index,
-                                             size_t limit) const;
+  std::vector<size_t> overlappingOccupancyOwners(const Rect& rect,
+                                                 size_t ignore_index,
+                                                 size_t limit) const;
   double displacementCost(const Cell& cell, const Rect& rect) const;
   bool refineOutliers();
   bool tryRefineOutlier(size_t cell_index, double outlier_threshold_um);
