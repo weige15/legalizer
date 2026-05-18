@@ -1,5 +1,9 @@
 # 1. Load files
-set caseName "testcase/ispd19_sample"
+set caseName "public/ispd15_mgc_matrix_mult_a"
+set threshold 45
+set alpha 0.7
+set norm_factor 18.2
+
 set lef_file [lindex [glob -directory $caseName *.lef] 0]
 set def_file [lindex [glob -directory $caseName *.def] 0]
 if {$lef_file eq "" || $def_file eq ""} {
@@ -20,21 +24,24 @@ global_placement -density 0.95
 source extract.tcl
 
 # Record prev position
+set insts [$block getInsts]
 foreach inst [$block getInsts] {
     set inst_locs([$inst getName]) [$inst getLocation]
 }
 
-# 4. Perform OpenROAD detail placement to debug
-detailed_placement
-# Replace with your program to legalize
-# exec make clean
-# exec make
-# exec timeout 30m Legalizer <alpha> <threshold> <input>.gp <output>.tcl
-# source <output>.tcl
+# 4. Run this legalizer and apply the generated direct place_cell commands.
+set gp_file [file join $caseName "${design_name}_insts.gp"]
+set out_tcl [file join $caseName "${design_name}_insts.tcl"]
+exec make
+exec timeout 30m ./Legalizer $alpha $threshold $gp_file $out_tcl
+source $out_tcl
 
 # 5. Check Legality
 if {[catch { check_placement -verbose } result] == 0} {
     puts "Legality PASS\n"
+} else {
+    puts $result
+    error "Legality FAIL"
 }
 
 # 6. Calculate displacement
@@ -78,12 +85,6 @@ puts "Done. Removed $count macro."
 set heat_name [file join $caseName "${design_name}_heat.csv"]
 gui::dump_heatmap "Placement" "$heat_name"
 puts "Done: $heat_name generated."
-
-# Parameter Settings
-# You are highly encouraged to experiment with different combinations to optimize the performance.
-set threshold 45;
-set alpha 0.7;
-set norm_factor 18.2;
 
 # 7. Calculate DOR (0-100)
 set total_grids 0
