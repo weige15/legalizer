@@ -49,6 +49,12 @@ class Legalizer {
                          bool displacement_only, Candidate& best) const;
   void repairDisplacementTail();
   double displacementUm(const Cell& cell) const;
+  double displacementUmWithPlacement(const Cell& cell,
+                                     const Rect& placed) const;
+  double totalDisplacementUm() const;
+  double maxDisplacementUm() const;
+  double maxDisplacementUmWithPlacement(size_t cell_index,
+                                        const Rect& placed) const;
   int64_t rowIndexForY(int64_t y) const;
   bool segmentOverlaps(const std::vector<Segment>& segments, int64_t x_min,
                        int64_t x_max) const;

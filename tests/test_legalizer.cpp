@@ -28,6 +28,34 @@ double displacementUm(const Design& d, const Cell& cell) {
          static_cast<double>(d.dbu_per_micron);
 }
 
+struct PlacementMetrics {
+  double total_displacement = 0.0;
+  double average_displacement = 0.0;
+  double max_displacement = 0.0;
+  double density_proxy = 0.0;
+};
+
+PlacementMetrics computeMetrics(const Design& d, double threshold) {
+  PlacementMetrics metrics;
+  size_t placed_count = 0;
+  for (const Cell& cell : d.cells) {
+    if (!cell.has_placement) continue;
+    const double disp = displacementUm(d, cell);
+    metrics.total_displacement += disp;
+    metrics.max_displacement = std::max(metrics.max_displacement, disp);
+    ++placed_count;
+  }
+  if (placed_count > 0) {
+    metrics.average_displacement =
+        metrics.total_displacement / static_cast<double>(placed_count);
+  }
+
+  DensityEstimator density(d, threshold);
+  density.rebuildMovableOccupancy();
+  metrics.density_proxy = density.overflowProxy();
+  return metrics;
+}
+
 void requireLegalPlacement(const Design& d) {
   for (const Cell& cell : d.cells) {
     require(cell.has_placement, "cell has placement: " + cell.name);
@@ -131,6 +159,7 @@ void testDensity() {
   density.commit(r);
   const double after = density.scoreCandidate(r);
   require(after >= before, "committed occupancy increases future score");
+  require(density.overflowProxy() >= 0.0, "density overflow proxy available");
 }
 
 void testLegalizerAndWriter() {
@@ -191,6 +220,34 @@ void testConstrainedCellAvoidsTailDisplacement() {
   require(max_disp <= 1.2, "tail displacement remains bounded");
 }
 
+void testRepairKeepsDensityAwarePlacement() {
+  Design d;
+  d.dbu_per_micron = 1000;
+  d.die = Rect{0, 0, 20000, 1000};
+  d.site_width = 100;
+  d.site_height = 1000;
+  d.cells.push_back(makeCell("u0", 0, 0, 100, 1000, 0));
+  d.cells.push_back(makeCell("u1", 0, 0, 100, 1000, 1));
+
+  std::string error;
+  require(validateDesign(d, error), "density repair fixture validates: " + error);
+  std::vector<LegalRow> rows;
+  require(RowIntervalBuilder::build(d, rows, error),
+          "density repair rows build: " + error);
+  DensityEstimator density(d, 1.0);
+  Legalizer legalizer(d, rows, density, 0.0);
+  require(legalizer.legalize(error), "density repair legalize succeeds: " + error);
+  requireLegalPlacement(d);
+
+  const PlacementMetrics metrics = computeMetrics(d, 1.0);
+  require(metrics.density_proxy == 0.0,
+          "repair does not increase density overflow proxy");
+  require(d.cells[1].placed.x_min >= 10000,
+          "repair keeps density-aware second-grid placement");
+  require(metrics.max_displacement >= 10.0,
+          "large displacement is kept when repair would worsen density");
+}
+
 void testOverfullFailure() {
   Design d = tinyDesign();
   d.die = Rect{0, 0, 300, 1000};
@@ -215,6 +272,7 @@ int main() {
   testDensity();
   testLegalizerAndWriter();
   testConstrainedCellAvoidsTailDisplacement();
+  testRepairKeepsDensityAwarePlacement();
   testOverfullFailure();
   std::cout << "All tests passed\n";
   return 0;

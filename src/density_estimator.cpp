@@ -99,6 +99,31 @@ double DensityEstimator::scoreCandidate(const Rect& rect) const {
   return weighted_overflow / touched_weight;
 }
 
+double DensityEstimator::overflowProxy() const {
+  int64_t total = 0;
+  int64_t overflow = 0;
+  for (int64_t gy = 0; gy < rows_; ++gy) {
+    for (int64_t gx = 0; gx < cols_; ++gx) {
+      const int64_t area = gridArea(gx, gy);
+      if (area <= 0) continue;
+
+      Grid grid;
+      const auto it = grids_.find(key(gx, gy));
+      if (it != grids_.end()) grid = it->second;
+      if (grid.macro_area >= area) continue;
+
+      const double available =
+          static_cast<double>(std::max<int64_t>(1, area - grid.macro_area));
+      const double density = 100.0 * static_cast<double>(grid.movable_area) /
+                             available;
+      ++total;
+      if (density > threshold_) ++overflow;
+    }
+  }
+  if (total == 0) return 0.0;
+  return 100.0 * static_cast<double>(overflow) / static_cast<double>(total);
+}
+
 void DensityEstimator::commit(const Rect& rect) {
   addArea(intersection(rect, design_.die), false);
 }

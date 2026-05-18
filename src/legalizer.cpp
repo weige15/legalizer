@@ -8,6 +8,17 @@ namespace legalizer {
 namespace {
 
 constexpr double kNormFactor = 18.2;
+constexpr double kTailRepairMinGainUm = 5.0;
+constexpr double kRepairEps = 1e-9;
+
+int constrainednessBucket(int64_t starts) {
+  if (starts <= 1) return 0;
+  if (starts <= 8) return 1;
+  if (starts <= 64) return 2;
+  if (starts <= 512) return 3;
+  if (starts <= 4096) return 4;
+  return 5;
+}
 
 void subtractSegment(std::vector<RowInterval>& intervals, int64_t cut_min,
                      int64_t cut_max) {
@@ -66,9 +77,9 @@ std::vector<size_t> Legalizer::placementOrder() const {
                                              size_t a, size_t b) {
     const Cell& ca = design_.cells[a];
     const Cell& cb = design_.cells[b];
-    const int64_t starts_a = constrained_starts[a];
-    const int64_t starts_b = constrained_starts[b];
-    if (starts_a != starts_b) return starts_a < starts_b;
+    const int bucket_a = constrainednessBucket(constrained_starts[a]);
+    const int bucket_b = constrainednessBucket(constrained_starts[b]);
+    if (bucket_a != bucket_b) return bucket_a < bucket_b;
     const int64_t area_a = rectArea(ca.original);
     const int64_t area_b = rectArea(cb.original);
     if (area_a != area_b) return area_a > area_b;
@@ -321,8 +332,43 @@ bool Legalizer::findBestCandidate(size_t cell_index, size_t row_budget,
 }
 
 double Legalizer::displacementUm(const Cell& cell) const {
-  return static_cast<double>(manhattanDisplacement(cell.original, cell.placed)) /
+  return displacementUmWithPlacement(cell, cell.placed);
+}
+
+double Legalizer::displacementUmWithPlacement(const Cell& cell,
+                                             const Rect& placed) const {
+  return static_cast<double>(manhattanDisplacement(cell.original, placed)) /
          static_cast<double>(design_.dbu_per_micron);
+}
+
+double Legalizer::totalDisplacementUm() const {
+  double total = 0.0;
+  for (const Cell& cell : design_.cells) {
+    if (cell.has_placement) total += displacementUm(cell);
+  }
+  return total;
+}
+
+double Legalizer::maxDisplacementUm() const {
+  double max_disp = 0.0;
+  for (const Cell& cell : design_.cells) {
+    if (cell.has_placement) max_disp = std::max(max_disp, displacementUm(cell));
+  }
+  return max_disp;
+}
+
+double Legalizer::maxDisplacementUmWithPlacement(size_t cell_index,
+                                                 const Rect& placed) const {
+  double max_disp = 0.0;
+  for (size_t i = 0; i < design_.cells.size(); ++i) {
+    const Cell& cell = design_.cells[i];
+    if (i == cell_index) {
+      max_disp = std::max(max_disp, displacementUmWithPlacement(cell, placed));
+    } else if (cell.has_placement) {
+      max_disp = std::max(max_disp, displacementUm(cell));
+    }
+  }
+  return max_disp;
 }
 
 int64_t Legalizer::rowIndexForY(int64_t y) const {
@@ -347,42 +393,60 @@ void Legalizer::repairDisplacementTail() {
   });
 
   const size_t attempts = std::min<size_t>(order.size(), 64);
+  auto restore_old = [this](size_t cell_index, const Rect& old_placed) {
+    Cell& cell = design_.cells[cell_index];
+    cell.placed = old_placed;
+    cell.has_placement = false;
+    const int64_t row = rowIndexForY(old_placed.y_min);
+    if (row >= 0) {
+      Candidate old_candidate{static_cast<size_t>(row), old_placed.x_min,
+                              old_placed.y_min, 0.0, 0.0, 0.0};
+      commit(cell_index, old_candidate);
+    }
+  };
+
   for (size_t pos = 0; pos < attempts; ++pos) {
     const size_t cell_index = order[pos];
     Cell& cell = design_.cells[cell_index];
     if (!cell.has_placement) continue;
     const Rect old_placed = cell.placed;
     const double old_disp = displacementUm(cell);
+    const double old_total_disp = totalDisplacementUm();
+    const double old_max_disp = maxDisplacementUm();
+    const double old_density_proxy = density_.overflowProxy();
 
     removeFromOccupancy(cell_index);
+    cell.has_placement = false;
+    density_.rebuildMovableOccupancy();
+
     Candidate best;
-    if (!findBestCandidate(cell_index, rows_.size(), true, best)) {
-      cell.placed = old_placed;
-      const int64_t row = rowIndexForY(cell.placed.y_min);
-      if (row >= 0) {
-        Candidate old_candidate{static_cast<size_t>(row), cell.placed.x_min,
-                                cell.placed.y_min, old_disp, old_disp, 0.0};
-        commit(cell_index, old_candidate);
-      }
+    if (!findBestCandidate(cell_index, rows_.size(), false, best)) {
+      restore_old(cell_index, old_placed);
       continue;
     }
 
     const Rect new_placed = makeRect(best.x, best.y, rectWidth(cell.original),
                                      rectHeight(cell.original));
-    const double new_disp =
-        static_cast<double>(manhattanDisplacement(cell.original, new_placed)) /
-        static_cast<double>(design_.dbu_per_micron);
-    if (new_disp + 1e-9 < old_disp) {
-      cell.placed = old_placed;
-      commit(cell_index, best);
-    } else {
-      cell.placed = old_placed;
-      const int64_t row = rowIndexForY(cell.placed.y_min);
-      if (row >= 0) {
-        Candidate old_candidate{static_cast<size_t>(row), cell.placed.x_min,
-                                cell.placed.y_min, old_disp, old_disp, 0.0};
-        commit(cell_index, old_candidate);
-      }
+    const double new_disp = displacementUmWithPlacement(cell, new_placed);
+    const double new_total_disp = old_total_disp - old_disp + new_disp;
+    const double new_max_disp =
+        maxDisplacementUmWithPlacement(cell_index, new_placed);
+
+    const bool meaningful_max_gain =
+        new_max_disp <= old_max_disp - kTailRepairMinGainUm + kRepairEps;
+    const bool total_not_worse = new_total_disp <= old_total_disp + kRepairEps;
+    if (!meaningful_max_gain || !total_not_worse) {
+      restore_old(cell_index, old_placed);
+      continue;
+    }
+
+    commit(cell_index, best);
+    const double new_density_proxy = density_.overflowProxy();
+    if (new_density_proxy > old_density_proxy + kRepairEps) {
+      removeFromOccupancy(cell_index);
+      cell.has_placement = false;
+      density_.rebuildMovableOccupancy();
+      restore_old(cell_index, old_placed);
     }
   }
 
