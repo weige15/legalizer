@@ -175,10 +175,7 @@ puts "Done. Removed $count macro."
 # Dump density csv, 10u grid
 # DO NOT change the name
 set heat_name [file join $caseName "${design_name}_heat.csv"]
-if {[catch {gui::dump_heatmap "Placement" "$heat_name"} heat_result]} {
-    puts "Warning: GUI heatmap dump failed, writing fallback density CSV: $heat_result"
-    write_fallback_density_csv $block $heat_name
-}
+write_fallback_density_csv $block $heat_name
 if {![file exists $heat_name] || [file size $heat_name] == 0} {
     error "Density CSV was not created: $heat_name"
 }
