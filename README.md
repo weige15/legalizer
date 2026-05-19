@@ -25,9 +25,14 @@ Example:
 Arguments:
 
 - `alpha`: weight for average displacement in the assignment quality metric.
-- `threshold`: density overflow threshold.
+- `threshold`: density overflow threshold percentage.
 - `input.gp`: extracted global placement input.
 - `output.tcl`: generated OpenROAD placement script.
+
+The tool validates the input, legalizes all movable `CELL` rows, validates the
+final placement, and atomically replaces `output.tcl` only after a valid
+placement is ready. Multi-row-height movable cells are rejected with a named
+diagnostic rather than emitted as knowingly illegal placements.
 
 ## Test
 
@@ -36,6 +41,20 @@ make test
 ```
 
 The test target builds and runs `tests/test_legalizer`.
+
+It also smoke-tests the required executable interface:
+
+```sh
+./Legalizer 0.7 45 tests/fixture_one_cell.gp tests/out_one_cell.tcl
+```
+
+## OpenROAD Flow
+
+`flow.tcl` defaults to `public/ispd19_sample`, builds `Legalizer`, runs it on
+the extracted `${design_name}_insts.gp`, checks that a nonempty output TCL was
+created, rejects output containing `detailed_placement`, and then sources the
+generated placement commands. Build, invocation, output, and source failures are
+reported with explicit diagnostics.
 
 ## Clean
 

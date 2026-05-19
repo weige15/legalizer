@@ -1,10 +1,12 @@
 # 1. Load files
-set caseName "testcase/ispd19_sample"
-set lef_file [lindex [glob -directory $caseName *.lef] 0]
-set def_file [lindex [glob -directory $caseName *.def] 0]
-if {$lef_file eq "" || $def_file eq ""} {
-    error "Error: Cannot find LEF or DEF file in $caseName"
+set caseName "public/ispd19_sample"
+set lef_files [glob -nocomplain -directory $caseName *.lef]
+set def_files [glob -nocomplain -directory $caseName *.def]
+if {[llength $lef_files] == 0 || [llength $def_files] == 0} {
+    error "Cannot find LEF or DEF file in $caseName"
 }
+set lef_file [lindex $lef_files 0]
+set def_file [lindex $def_files 0]
 read_lef $lef_file
 read_def $def_file
 
@@ -16,21 +18,50 @@ set design_name [$block getName]
 # 2. Perform OpenROAD Global Placement to disturb
 global_placement -density 0.95
 
+# Parameter Settings
+# You are highly encouraged to experiment with different combinations to optimize the performance.
+set threshold 45
+set alpha 0.7
+set norm_factor 18.2
+
 # 3. Extract <input>.gp
 source extract.tcl
+set gp_file [file join $caseName "${design_name}_insts.gp"]
+set legalizer_tcl [file join $caseName "${design_name}_legalized.tcl"]
 
 # Record prev position
 foreach inst [$block getInsts] {
     set inst_locs([$inst getName]) [$inst getLocation]
 }
 
-# 4. Perform OpenROAD detail placement to debug
-detailed_placement
-# Replace with your program to legalize
-# exec make clean
-# exec make
-# exec timeout 30m Legalizer <alpha> <threshold> <input>.gp <output>.tcl
-# source <output>.tcl
+# 4. Legalize with the external program and source only validated output.
+if {[catch {exec make} build_result]} {
+    error "Legalizer build failed:\n$build_result"
+}
+if {![file executable "./Legalizer"]} {
+    error "Legalizer executable was not created by make"
+}
+if {![file exists $gp_file] || [file size $gp_file] == 0} {
+    error "Expected extracted GP file is missing or empty: $gp_file"
+}
+if {[file exists $legalizer_tcl]} {
+    file delete -force $legalizer_tcl
+}
+if {[catch {exec timeout 30m ./Legalizer $alpha $threshold $gp_file $legalizer_tcl} legalizer_result]} {
+    error "Legalizer invocation failed:\n$legalizer_result"
+}
+if {![file exists $legalizer_tcl] || [file size $legalizer_tcl] == 0} {
+    error "Legalizer did not produce a nonempty output TCL: $legalizer_tcl"
+}
+set fp_check [open $legalizer_tcl r]
+set legalizer_text [read $fp_check]
+close $fp_check
+if {[string first "detailed_placement" $legalizer_text] >= 0} {
+    error "Refusing to source output TCL because it contains detailed_placement"
+}
+if {[catch {source $legalizer_tcl} source_result]} {
+    error "Failed to source Legalizer output $legalizer_tcl:\n$source_result"
+}
 
 # 5. Check Legality
 if {[catch { check_placement -verbose } result] == 0} {
@@ -78,12 +109,6 @@ puts "Done. Removed $count macro."
 set heat_name [file join $caseName "${design_name}_heat.csv"]
 gui::dump_heatmap "Placement" "$heat_name"
 puts "Done: $heat_name generated."
-
-# Parameter Settings
-# You are highly encouraged to experiment with different combinations to optimize the performance.
-set threshold 45;
-set alpha 0.7;
-set norm_factor 18.2;
 
 # 7. Calculate DOR (0-100)
 set total_grids 0
