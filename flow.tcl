@@ -63,6 +63,74 @@ if {[catch {source $legalizer_tcl} source_result]} {
     error "Failed to source Legalizer output $legalizer_tcl:\n$source_result"
 }
 
+proc rect_overlap_area {ax0 ay0 ax1 ay1 bx0 by0 bx1 by1} {
+    set x0 [expr {max($ax0, $bx0)}]
+    set y0 [expr {max($ay0, $by0)}]
+    set x1 [expr {min($ax1, $bx1)}]
+    set y1 [expr {min($ay1, $by1)}]
+    if {$x0 >= $x1 || $y0 >= $y1} {
+        return 0
+    }
+    return [expr {($x1 - $x0) * ($y1 - $y0)}]
+}
+
+proc write_fallback_density_csv {block heat_name} {
+    set dbu_val [$block getDbUnitsPerMicron]
+    set grid_size [expr {10 * $dbu_val}]
+    set die_area [$block getDieArea]
+    set die_x0 [expr {int([$die_area xMin])}]
+    set die_y0 [expr {int([$die_area yMin])}]
+    set die_x1 [expr {int([$die_area xMax])}]
+    set die_y1 [expr {int([$die_area yMax])}]
+    set cols [expr {int(ceil(($die_x1 - $die_x0) / double($grid_size)))}]
+    set rows [expr {int(ceil(($die_y1 - $die_y0) / double($grid_size)))}]
+
+    set fp [open $heat_name w]
+    puts $fp "x,y,width,height,density"
+    for {set gy 0} {$gy < $rows} {incr gy} {
+        set gy0 [expr {$die_y0 + $gy * $grid_size}]
+        set gy1 [expr {min($die_y1, $gy0 + $grid_size)}]
+        for {set gx 0} {$gx < $cols} {incr gx} {
+            set gx0 [expr {$die_x0 + $gx * $grid_size}]
+            set gx1 [expr {min($die_x1, $gx0 + $grid_size)}]
+            set grid_area [expr {double(($gx1 - $gx0) * ($gy1 - $gy0))}]
+            if {$grid_area <= 0.0} {
+                continue
+            }
+
+            set covered_by_macro 0
+            set movable_area 0
+            foreach inst [$block getInsts] {
+                set bbox [$inst getBBox]
+                if {$bbox eq "" || $bbox eq "NULL"} {
+                    continue
+                }
+                set ix0 [expr {int([$bbox xMin])}]
+                set iy0 [expr {int([$bbox yMin])}]
+                set ix1 [expr {int([$bbox xMax])}]
+                set iy1 [expr {int([$bbox yMax])}]
+                set overlap [rect_overlap_area $gx0 $gy0 $gx1 $gy1 $ix0 $iy0 $ix1 $iy1]
+                if {$overlap == 0} {
+                    continue
+                }
+                set master [$inst getMaster]
+                set m_type [$master getType]
+                if {$m_type eq "BLOCK"} {
+                    set covered_by_macro 1
+                    break
+                }
+                set movable_area [expr {$movable_area + $overlap}]
+            }
+            if {$covered_by_macro} {
+                continue
+            }
+            set density [expr {($movable_area / $grid_area) * 100.0}]
+            puts $fp "$gx0,$gy0,[expr {$gx1 - $gx0}],[expr {$gy1 - $gy0}],$density"
+        }
+    }
+    close $fp
+}
+
 # 5. Check Legality
 if {[catch { check_placement -verbose } result] == 0} {
     puts "Legality PASS\n"
@@ -107,7 +175,13 @@ puts "Done. Removed $count macro."
 # Dump density csv, 10u grid
 # DO NOT change the name
 set heat_name [file join $caseName "${design_name}_heat.csv"]
-gui::dump_heatmap "Placement" "$heat_name"
+if {[catch {gui::dump_heatmap "Placement" "$heat_name"} heat_result]} {
+    puts "Warning: GUI heatmap dump failed, writing fallback density CSV: $heat_result"
+    write_fallback_density_csv $block $heat_name
+}
+if {![file exists $heat_name] || [file size $heat_name] == 0} {
+    error "Density CSV was not created: $heat_name"
+}
 puts "Done: $heat_name generated."
 
 # 7. Calculate DOR (0-100)
