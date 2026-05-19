@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  std::cerr << "Legalized " << legalized.model.cells.size()
+  std::cout << "Legalized " << legalized.model.cells.size()
             << " cells. Avg displacement: " << legalized.average_displacement
             << "um, DOR: " << legalized.dor << "%, quality: " << legalized.quality
             << "\n";
