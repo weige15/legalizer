@@ -1,5 +1,32 @@
 # 1. Load files
 set caseName "public/ispd19_sample"
+set argi 0
+while {$argi < [llength $argv]} {
+    set arg [lindex $argv $argi]
+    if {$arg eq "-case"} {
+        incr argi
+        if {$argi >= [llength $argv]} {
+            error "Missing value after -case"
+        }
+        set caseName [lindex $argv $argi]
+    } elseif {$arg eq "-alpha"} {
+        incr argi
+        if {$argi >= [llength $argv]} {
+            error "Missing value after -alpha"
+        }
+        set alpha_override [lindex $argv $argi]
+    } elseif {$arg eq "-threshold"} {
+        incr argi
+        if {$argi >= [llength $argv]} {
+            error "Missing value after -threshold"
+        }
+        set threshold_override [lindex $argv $argi]
+    } else {
+        error "Unknown flow.tcl argument '$arg'. Usage: openroad flow.tcl ?-case <dir>? ?-alpha <value>? ?-threshold <value>?"
+    }
+    incr argi
+}
+puts "Using case: $caseName"
 set lef_files [glob -nocomplain -directory $caseName *.lef]
 set def_files [glob -nocomplain -directory $caseName *.def]
 if {[llength $lef_files] == 0 || [llength $def_files] == 0} {
@@ -22,6 +49,12 @@ global_placement -density 0.95
 # You are highly encouraged to experiment with different combinations to optimize the performance.
 set threshold 45
 set alpha 0.7
+if {[info exists threshold_override]} {
+    set threshold $threshold_override
+}
+if {[info exists alpha_override]} {
+    set alpha $alpha_override
+}
 set norm_factor 18.2
 
 # 3. Extract <input>.gp
