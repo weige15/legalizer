@@ -1,5 +1,5 @@
 # 1. Load files
-set caseName "testcase/ispd19_sample"
+set caseName "public/ispd15_mgc_matrix_mult_a"
 set lef_file [lindex [glob -directory $caseName *.lef] 0]
 set def_file [lindex [glob -directory $caseName *.def] 0]
 if {$lef_file eq "" || $def_file eq ""} {
@@ -24,13 +24,14 @@ foreach inst [$block getInsts] {
     set inst_locs([$inst getName]) [$inst getLocation]
 }
 
-# 4. Perform OpenROAD detail placement to debug
-detailed_placement
-# Replace with your program to legalize
-# exec make clean
-# exec make
-# exec timeout 30m Legalizer <alpha> <threshold> <input>.gp <output>.tcl
-# source <output>.tcl
+# 4. Legalize with this assignment implementation
+set threshold 45
+set alpha 0.7
+set legalizer_input [file join $caseName "${design_name}_insts.gp"]
+set legalizer_output [file join $caseName "${design_name}_legalized.tcl"]
+exec make
+exec timeout 30m ./Legalizer $alpha $threshold $legalizer_input $legalizer_output
+source $legalizer_output
 
 # 5. Check Legality
 if {[catch { check_placement -verbose } result] == 0} {
@@ -62,6 +63,7 @@ set max_u   [expr {$max_dist / double($dbu_val)}]
 
 # Remove macro
 set count 0
+set insts [$block getInsts]
 foreach inst $insts {
     set inst_name [$inst getName]
     
@@ -81,8 +83,8 @@ puts "Done: $heat_name generated."
 
 # Parameter Settings
 # You are highly encouraged to experiment with different combinations to optimize the performance.
-set threshold 45;
-set alpha 0.7;
+set threshold $threshold;
+set alpha $alpha;
 set norm_factor 18.2;
 
 # 7. Calculate DOR (0-100)
