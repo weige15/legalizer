@@ -30,7 +30,15 @@ set alpha 0.7
 set legalizer_input [file join $caseName "${design_name}_insts.gp"]
 set legalizer_output [file join $caseName "${design_name}_legalized.tcl"]
 exec make
-exec timeout 30m ./Legalizer $alpha $threshold $legalizer_input $legalizer_output
+puts "Running Legalizer: ./Legalizer $alpha $threshold $legalizer_input $legalizer_output"
+if {[catch {exec timeout 30m ./Legalizer $alpha $threshold $legalizer_input $legalizer_output 2>@1} legalizer_result legalizer_options]} {
+    puts $legalizer_result
+    puts "Legalizer failed with error code: [dict get $legalizer_options -errorcode]"
+    error "Legalizer failed"
+}
+if {$legalizer_result ne ""} {
+    puts $legalizer_result
+}
 source $legalizer_output
 
 # 5. Check Legality

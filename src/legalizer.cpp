@@ -58,53 +58,6 @@ void recomputeCluster(Cluster& cluster, const Interval& segment, Coord site_orig
     cluster.x = nearestAlignedInRange(target, min_x, max_x, site_origin, site_width);
 }
 
-std::vector<Interval> mergeIntervalsLocal(std::vector<Interval> intervals) {
-    std::sort(intervals.begin(), intervals.end(), [](const Interval& a, const Interval& b) {
-        if (a.lx != b.lx) {
-            return a.lx < b.lx;
-        }
-        return a.ux < b.ux;
-    });
-    std::vector<Interval> out;
-    for (const Interval& interval : intervals) {
-        if (interval.lx >= interval.ux) {
-            continue;
-        }
-        if (out.empty() || out.back().ux < interval.lx) {
-            out.push_back(interval);
-        } else {
-            out.back().ux = std::max(out.back().ux, interval.ux);
-        }
-    }
-    return out;
-}
-
-std::vector<Interval> subtractIntervals(std::vector<Interval> free, std::vector<Interval> blocked) {
-    blocked = mergeIntervalsLocal(blocked);
-    std::vector<Interval> result;
-    for (const Interval& source : free) {
-        Coord cursor = source.lx;
-        for (const Interval& block : blocked) {
-            if (block.ux <= cursor) {
-                continue;
-            }
-            if (source.ux <= block.lx) {
-                break;
-            }
-            Coord blx = std::max(source.lx, block.lx);
-            Coord bux = std::min(source.ux, block.ux);
-            if (cursor < blx) {
-                result.push_back(Interval{cursor, blx});
-            }
-            cursor = std::max(cursor, bux);
-        }
-        if (cursor < source.ux) {
-            result.push_back(Interval{cursor, source.ux});
-        }
-    }
-    return result;
-}
-
 std::vector<Interval> intersectIntervals(const std::vector<Interval>& a, const std::vector<Interval>& b) {
     std::vector<Interval> out;
     std::size_t i = 0;
@@ -140,17 +93,17 @@ struct Candidate {
 
 struct TrialState {
     std::vector<std::optional<Placement>> placements;
-    std::vector<Rect> placed_rects;
+    std::vector<std::vector<Interval>> free_by_row;
     Coord total_displacement = 0;
     DensityEstimator density;
 
-    TrialState(const Design& design)
-        : placements(design.cells.size()), density(design) {}
+    TrialState(const Design& design, const std::vector<Row>& rows)
+        : placements(design.cells.size()), free_by_row(rows.size()), density(design) {
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            free_by_row[i] = rows[i].segments;
+        }
+    }
 };
-
-bool verticalOverlaps(Coord ly, Coord uy, const Rect& rect) {
-    return ly < rect.uy && rect.ly < uy;
-}
 
 std::vector<Interval> snapIntervals(const std::vector<Interval>& intervals,
                                     Coord die_lx,
@@ -174,21 +127,32 @@ std::vector<std::size_t> rowOrderByDistance(const Design& design,
     if (row_span <= 0 || rows.size() < static_cast<std::size_t>(row_span)) {
         return starts;
     }
-    std::size_t last = rows.size() - static_cast<std::size_t>(row_span);
-    for (std::size_t i = 0; i <= last; ++i) {
-        Coord y = rows[i].y;
-        if (y + cell.height <= design.die.uy) {
-            starts.push_back(i);
+    Coord max_start = static_cast<Coord>(rows.size()) - row_span;
+    Coord preferred = (cell.original_ly - design.die.ly + design.site_height / 2) / design.site_height;
+    preferred = std::max<Coord>(0, std::min<Coord>(max_start, preferred));
+
+    for (Coord delta = 0; starts.size() < static_cast<std::size_t>(max_start + 1); ++delta) {
+        bool added = false;
+        Coord down = preferred - delta;
+        Coord up = preferred + delta;
+        if (down >= 0) {
+            Coord y = rows[static_cast<std::size_t>(down)].y;
+            if (y + cell.height <= design.die.uy) {
+                starts.push_back(static_cast<std::size_t>(down));
+            }
+            added = true;
+        }
+        if (delta != 0 && up <= max_start) {
+            Coord y = rows[static_cast<std::size_t>(up)].y;
+            if (y + cell.height <= design.die.uy) {
+                starts.push_back(static_cast<std::size_t>(up));
+            }
+            added = true;
+        }
+        if (!added && down < 0 && up > max_start) {
+            break;
         }
     }
-    std::sort(starts.begin(), starts.end(), [&](std::size_t a, std::size_t b) {
-        Coord da = std::llabs(rows[a].y - cell.original_ly);
-        Coord db = std::llabs(rows[b].y - cell.original_ly);
-        if (da != db) {
-            return da < db;
-        }
-        return rows[a].y < rows[b].y;
-    });
     return starts;
 }
 
@@ -199,23 +163,36 @@ std::vector<Interval> freeIntervalsForSpan(const Design& design,
                                            Coord row_span,
                                            Coord cell_ly,
                                            Coord cell_height) {
-    std::vector<Interval> common = rows[row_start].segments;
+    std::vector<Interval> common = state.free_by_row[row_start];
     for (Coord offset = 1; offset < row_span; ++offset) {
-        common = intersectIntervals(common, rows[row_start + static_cast<std::size_t>(offset)].segments);
+        common = intersectIntervals(common, state.free_by_row[row_start + static_cast<std::size_t>(offset)]);
         if (common.empty()) {
             return common;
         }
     }
 
-    Coord cell_uy = cell_ly + cell_height;
-    std::vector<Interval> blocked;
-    for (const Rect& placed : state.placed_rects) {
-        if (verticalOverlaps(cell_ly, cell_uy, placed)) {
-            blocked.push_back(Interval{placed.lx, placed.ux});
+    (void)rows;
+    (void)cell_ly;
+    (void)cell_height;
+    return snapIntervals(common, design.die.lx, design.site_width);
+}
+
+void consumeInterval(std::vector<Interval>& free, Coord lx, Coord ux) {
+    std::vector<Interval> next;
+    next.reserve(free.size() + 1);
+    for (const Interval& interval : free) {
+        if (ux <= interval.lx || interval.ux <= lx) {
+            next.push_back(interval);
+            continue;
+        }
+        if (interval.lx < lx) {
+            next.push_back(Interval{interval.lx, lx});
+        }
+        if (ux < interval.ux) {
+            next.push_back(Interval{ux, interval.ux});
         }
     }
-    common = subtractIntervals(common, blocked);
-    return snapIntervals(common, design.die.lx, design.site_width);
+    free.swap(next);
 }
 
 Candidate findCandidate(const Design& design,
@@ -227,9 +204,15 @@ Candidate findCandidate(const Design& design,
     Coord row_span = std::max<Coord>(1, ceilDiv(cell.height, design.site_height));
     std::vector<std::size_t> starts = rowOrderByDistance(design, rows, cell, row_span);
     Candidate best;
+    bool use_density_in_candidate_score = design.cells.size() <= 5000;
+    Coord best_row_distance = std::numeric_limits<Coord>::max();
 
     for (std::size_t row_start : starts) {
         Coord ly = rows[row_start].y;
+        Coord row_distance = std::llabs(ly - cell.original_ly);
+        if (best.valid && row_distance > best_row_distance) {
+            break;
+        }
         std::vector<Interval> intervals = freeIntervalsForSpan(design, rows, state, row_start,
                                                                row_span, ly, cell.height);
         for (const Interval& interval : intervals) {
@@ -256,7 +239,9 @@ Candidate findCandidate(const Design& design,
                 }
                 Coord disp = manhattanDisplacementDbu(cell, lx, ly);
                 double disp_u = static_cast<double>(disp) / static_cast<double>(design.dbu_per_micron);
-                double dor = state.density.dorWithAddedRect(rect, config.threshold);
+                double dor = use_density_in_candidate_score
+                                 ? state.density.dorWithAddedRect(rect, config.threshold)
+                                 : 0.0;
                 double score = config.alpha * disp_u * 18.2 + (1.0 - config.alpha) * dor;
                 score += 1e-9 * static_cast<double>(cell.input_index);
                 if (!best.valid || score < best.score ||
@@ -268,6 +253,7 @@ Candidate findCandidate(const Design& design,
                     best.ly = ly;
                     best.score = score;
                     best.displacement = disp;
+                    best_row_distance = row_distance;
                 }
             }
         }
@@ -356,7 +342,13 @@ bool runTrial(const Design& design,
         Placement placement{candidate.lx, candidate.ly};
         state.placements[idx] = placement;
         Rect rect = rectFromOrigin(design.cells[idx], placement.lx, placement.ly);
-        state.placed_rects.push_back(rect);
+        Coord row_span = std::max<Coord>(1, ceilDiv(design.cells[idx].height, design.site_height));
+        std::size_t row_start = static_cast<std::size_t>((placement.ly - design.die.ly) / design.site_height);
+        for (Coord offset = 0; offset < row_span; ++offset) {
+            consumeInterval(state.free_by_row[row_start + static_cast<std::size_t>(offset)],
+                            placement.lx,
+                            placement.lx + design.cells[idx].width);
+        }
         state.total_displacement += manhattanDisplacementDbu(design.cells[idx],
                                                              placement.lx,
                                                              placement.ly);
@@ -443,8 +435,9 @@ void legalizeDesign(Design& design,
     std::vector<std::optional<Placement>> best_placements;
     std::string last_error;
 
-    for (int mode = 0; mode < 3; ++mode) {
-        TrialState state(design);
+    int trial_count = design.cells.size() > 50000 ? 1 : 3;
+    for (int mode = 0; mode < trial_count; ++mode) {
+        TrialState state(design, rows);
         std::string error;
         if (!runTrial(design, rows, config, mode, state, error)) {
             last_error = error;
