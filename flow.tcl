@@ -1,30 +1,7 @@
 # 1. Load files
 set caseName "public/ispd19_sample"
-set argi 0
-while {$argi < [llength $argv]} {
-    set arg [lindex $argv $argi]
-    if {$arg eq "-case"} {
-        incr argi
-        if {$argi >= [llength $argv]} {
-            error "Missing value after -case"
-        }
-        set caseName [lindex $argv $argi]
-    } elseif {$arg eq "-alpha"} {
-        incr argi
-        if {$argi >= [llength $argv]} {
-            error "Missing value after -alpha"
-        }
-        set alpha_override [lindex $argv $argi]
-    } elseif {$arg eq "-threshold"} {
-        incr argi
-        if {$argi >= [llength $argv]} {
-            error "Missing value after -threshold"
-        }
-        set threshold_override [lindex $argv $argi]
-    } else {
-        error "Unknown flow.tcl argument '$arg'. Usage: openroad flow.tcl ?-case <dir>? ?-alpha <value>? ?-threshold <value>?"
-    }
-    incr argi
+if {[info exists ::env(CASE_NAME)] && $::env(CASE_NAME) ne ""} {
+    set caseName $::env(CASE_NAME)
 }
 puts "Using case: $caseName"
 set lef_files [glob -nocomplain -directory $caseName *.lef]
@@ -49,11 +26,11 @@ global_placement -density 0.95
 # You are highly encouraged to experiment with different combinations to optimize the performance.
 set threshold 45
 set alpha 0.7
-if {[info exists threshold_override]} {
-    set threshold $threshold_override
+if {[info exists ::env(THRESHOLD)] && $::env(THRESHOLD) ne ""} {
+    set threshold $::env(THRESHOLD)
 }
-if {[info exists alpha_override]} {
-    set alpha $alpha_override
+if {[info exists ::env(ALPHA)] && $::env(ALPHA) ne ""} {
+    set alpha $::env(ALPHA)
 }
 set norm_factor 18.2
 
