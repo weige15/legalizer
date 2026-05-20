@@ -62,7 +62,7 @@ int run(const RunConfig& config) {
         return 2;
     }
     writeTcl(model, solved.placements, config.output_path);
-    std::cerr << "Legalizer metrics: avg_disp_um=" << valid.metrics.avg_displacement_um
+    std::cout << "Legalizer metrics: avg_disp_um=" << valid.metrics.avg_displacement_um
               << " norm_disp=" << valid.metrics.normalized_displacement
               << " dor=" << valid.metrics.dor_percent
               << " flow_quality=" << valid.metrics.flow_quality << "\n";
