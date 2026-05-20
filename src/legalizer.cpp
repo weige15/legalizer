@@ -139,15 +139,18 @@ TrialPlacement makeTrial(const PlacementModel &model, const std::vector<SiteRow>
     return trial;
   }
 
-  double movement = 0.0;
-  double changed = 0.0;
+  double movement_delta = 0.0;
+  double disturbance = 0.0;
   Rect candidate_rect;
   for (const auto &entry : trial.placements) {
     const Cell &placed_cell = model.cells[static_cast<std::size_t>(entry.first)];
-    movement += manhattanMicron(model, placed_cell.original, entry.second);
-    if (!placed_cell.has_placement || placed_cell.placed.llx != entry.second.llx ||
-        placed_cell.placed.lly != entry.second.lly) {
-      changed += manhattanMicron(model, placed_cell.original, entry.second);
+    double before = placed_cell.has_placement
+                        ? manhattanMicron(model, placed_cell.original, placed_cell.placed)
+                        : 0.0;
+    double after = manhattanMicron(model, placed_cell.original, entry.second);
+    movement_delta += after - before;
+    if (placed_cell.has_placement) {
+      disturbance += manhattanMicron(model, placed_cell.placed, entry.second);
     }
     if (entry.first == cell_id) {
       candidate_rect = entry.second;
@@ -157,7 +160,9 @@ TrialPlacement makeTrial(const PlacementModel &model, const std::vector<SiteRow>
   double density_penalty = density.trialPenalty(candidate_rect, options.threshold);
   double row_distance = std::abs(candidate_rect.lly - cell.original.lly) /
                         static_cast<double>(model.dbu_per_micron);
-  trial.score = options.alpha * (movement + 0.1 * changed + row_distance) +
+  double movement_cost = options.norm_factor * (movement_delta + 0.01 * disturbance +
+                                                0.05 * row_distance);
+  trial.score = options.alpha * movement_cost +
                 (1.0 - options.alpha) * density_penalty;
   trial.feasible = true;
   return trial;
@@ -402,7 +407,8 @@ ValidationResult validatePlacement(const PlacementModel &model, const std::vecto
   DensityResult density = computeFinalDensity(model, options.threshold);
   result.average_displacement = averageDisplacementMicron(model);
   result.dor = density.dor;
-  result.quality = options.alpha * result.average_displacement + (1.0 - options.alpha) * result.dor;
+  result.quality = options.alpha * (result.average_displacement * options.norm_factor) +
+                   (1.0 - options.alpha) * result.dor;
   result.ok = true;
   return result;
 }

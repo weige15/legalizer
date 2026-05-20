@@ -13,6 +13,7 @@ namespace legalizer {
 struct LegalizeOptions {
   double alpha = 0.7;
   double threshold = 45.0;
+  double norm_factor = 18.2;
 };
 
 struct LegalizeResult {
