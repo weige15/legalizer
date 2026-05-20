@@ -1,8 +1,46 @@
-# 1. Load files
-set caseName "public/ispd19_sample"
-if {[info exists ::env(CASE_NAME)] && $::env(CASE_NAME) ne ""} {
-    set caseName $::env(CASE_NAME)
+# 0. Case selection
+# By default, run both public benchmarks in isolated OpenROAD child processes.
+# Override with CASE_NAME for one case, or CASES for a Tcl list of cases.
+set default_cases {public/ispd15_mgc_matrix_mult_a public/ispd19_sample}
+if {[info exists ::env(CASES)] && $::env(CASES) ne ""} {
+    set requested_cases $::env(CASES)
+} elseif {[info exists ::env(CASE_NAME)] && $::env(CASE_NAME) ne ""} {
+    set requested_cases [list $::env(CASE_NAME)]
+} else {
+    set requested_cases $default_cases
 }
+
+if {[llength $requested_cases] > 1} {
+    set runner [info nameofexecutable]
+    set saved_case_name ""
+    set had_case_name [info exists ::env(CASE_NAME)]
+    if {$had_case_name} {
+        set saved_case_name $::env(CASE_NAME)
+    }
+
+    foreach one_case $requested_cases {
+        puts ""
+        puts "========================================"
+        puts "Running case: $one_case"
+        puts "========================================"
+        set ::env(CASE_NAME) $one_case
+        if {[catch {exec $runner -exit [info script] 2>@1} child_result]} {
+            puts $child_result
+            error "Case failed: $one_case"
+        }
+        puts $child_result
+    }
+
+    if {$had_case_name} {
+        set ::env(CASE_NAME) $saved_case_name
+    } else {
+        unset ::env(CASE_NAME)
+    }
+    exit
+}
+
+# 1. Load files
+set caseName [lindex $requested_cases 0]
 puts "Using case: $caseName"
 set lef_files [glob -nocomplain -directory $caseName *.lef]
 set def_files [glob -nocomplain -directory $caseName *.def]

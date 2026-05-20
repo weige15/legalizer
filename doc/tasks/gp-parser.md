@@ -2,23 +2,23 @@
 
 ## Goal
 
-Parse assignment `.gp` files into typed DBU-based placement records without making legalization decisions.
+Parse assignment `.gp` files strictly into the placement model without guessing malformed input.
 
 ## Inputs
 
-- `doc/proposal.md`: Input contains technology metadata, die bounds, site dimensions, and `CELL`, `MACRO`, or `BLOCKAGE` instance records.
-- `doc/detailed-design.md`: Parser owns lexical and structural validation and outputs a `PlacementModel`.
+- `doc/proposal.md`: Required `.gp` fields and need to preserve original cell locations.
+- `doc/detailed-design.md`: Exact header order, instance record shape, line-number diagnostics, and parser failure cases.
 
 ## Tasks
 
-- [ ] Implement `src/gp_parser.{h,cpp}` to read required metadata keys and the instance table header.
-- [ ] Parse instance rows into integer DBU rectangles and classify movable cells versus fixed obstacles.
-- [ ] Preserve input order and reject duplicate instance names.
-- [ ] Report unreadable files, malformed integers, unknown types, nonpositive dimensions, missing metadata, and invalid site dimensions.
-- [ ] Add parser tests for one-cell, macro/blockage, malformed header, unknown type, negative dimension, and duplicate-name fixtures.
+- [x] Read `.gp` input line by line and parse required metadata in exact order.
+- [x] Accept the assignment column header and parse each instance as six whitespace-separated fields.
+- [x] Convert lower-left plus width/height into half-open DBU rectangles with overflow checks.
+- [x] Preserve input order for deterministic ties and output ordering.
+- [x] Return parse diagnostics with line number and reason for malformed metadata or records.
+- [x] Add fixtures for valid one-cell, macro/blockage, missing header, unknown type, negative dimension, and truncated record cases.
 
 ## Done When
 
-- [ ] Valid `.gp` fixtures produce a populated `PlacementModel` with integer DBU geometry.
-- [ ] Invalid `.gp` fixtures fail with useful diagnostics.
-- [ ] Parser tests pass under `make test`.
+- [x] Valid fixtures produce fully populated placement models.
+- [x] Malformed fixtures fail deterministically with useful diagnostics.

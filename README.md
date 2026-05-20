@@ -50,11 +50,16 @@ It also smoke-tests the required executable interface:
 
 ## OpenROAD Flow
 
-`flow.tcl` defaults to `public/ispd19_sample`, builds `Legalizer`, runs it on
-the extracted `${design_name}_insts.gp`, checks that a nonempty output TCL was
-created, rejects output containing `detailed_placement`, and then sources the
-generated placement commands. Build, invocation, output, and source failures are
-reported with explicit diagnostics.
+`flow.tcl` defaults to running both public cases,
+`public/ispd15_mgc_matrix_mult_a` and `public/ispd19_sample`, in isolated
+OpenROAD child processes. Set `CASE_NAME` to run one case, or `CASES` to run a
+custom Tcl list of case directories.
+
+For each case, the flow builds `Legalizer`, runs it on the extracted
+`${design_name}_insts.gp`, checks that a nonempty output TCL was created,
+rejects output containing `detailed_placement`, and then sources the generated
+placement commands. Build, invocation, output, and source failures are reported
+with explicit diagnostics.
 
 ## Clean
 

@@ -2,23 +2,23 @@
 
 ## Goal
 
-Create a focused test harness and fixtures that validate each module and the assignment executable path.
+Provide fast unit and integration coverage for the modular legalizer without requiring OpenROAD.
 
 ## Inputs
 
-- `doc/proposal.md`: Validation should cover parsing, snapping, row intervals, cluster placement, TCL output, legality, public benchmark smoke tests, and runtime.
-- `doc/detailed-design.md`: Existing `Makefile` expects `tests/test_legalizer.cpp` and `make test`.
+- `doc/proposal.md`: Validation plan covering parser, row intervals, Abacus, legality, DOR, CLI, and public flow checks.
+- `doc/detailed-design.md`: Tests module structure, fixture expectations, `make test`, and manual OpenROAD flow commands.
 
 ## Tasks
 
-- [ ] Create `tests/test_legalizer.cpp` with lightweight assertions for all implemented modules.
-- [ ] Add tiny hand-written `.gp` fixtures for one-cell, obstacle, overlap, density, and writer smoke cases.
-- [ ] Ensure `make test` builds and runs the test executable expected by the existing `Makefile`.
-- [ ] Add an end-to-end smoke test that invokes `./Legalizer` on a tiny valid fixture and checks TCL command structure.
-- [ ] Keep generated test outputs narrow and predictable under `tests/` or a temporary path.
+- [x] Create small `.gp` fixtures for one-cell, two-overlap, macro-split, blockage, malformed parser cases, and density examples.
+- [x] Build a lightweight C++ test executable using `assert` or a tiny local check macro.
+- [x] Cover parser, geometry, row interval construction, density, Abacus row solving, validator, writer, and CLI smoke behavior.
+- [x] Wire `make test` to build and run unit tests plus one executable smoke test.
+- [x] Keep OpenROAD-dependent flow checks documented as manual commands.
+- [x] Add public benchmark notes for one high-`alpha` and one low-`alpha` run after implementation exists.
 
 ## Done When
 
-- [ ] `make test` exercises parser, model, rows, row solver, density, checker, writer, and CLI paths as they become available.
-- [ ] Tiny fixtures can run without OpenROAD.
-- [ ] Public benchmark smoke testing is documented or added when `.gp` fixtures are available.
+- [x] `make test` runs without OpenROAD and fails on any unit or smoke-test failure.
+- [x] Manual flow commands are documented for public benchmark validation.

@@ -1,84 +1,95 @@
 #include "row_interval_builder.h"
 
 #include <algorithm>
+#include <sstream>
 
 namespace legalizer {
+
 namespace {
 
-void subtractSpan(std::vector<RowInterval> *intervals, Coord block_llx, Coord block_urx) {
-  std::vector<RowInterval> next;
-  for (const RowInterval &interval : *intervals) {
-    if (block_urx <= interval.llx || interval.urx <= block_llx) {
-      next.push_back(interval);
-      continue;
-    }
-    if (interval.llx < block_llx) {
-      next.push_back(RowInterval{interval.llx, std::min(interval.urx, block_llx)});
-    }
-    if (block_urx < interval.urx) {
-      next.push_back(RowInterval{std::max(interval.llx, block_urx), interval.urx});
-    }
-  }
-  *intervals = std::move(next);
-}
+struct Span {
+    int64_t x0 = 0;
+    int64_t x1 = 0;
+};
 
-std::vector<RowInterval> snapIntervals(const PlacementModel &model,
-                                       const std::vector<RowInterval> &intervals) {
-  std::vector<RowInterval> snapped;
-  for (const RowInterval &interval : intervals) {
-    Coord llx = alignUp(interval.llx, model.die.llx, model.site_width);
-    Coord urx = alignDown(interval.urx, model.die.llx, model.site_width);
-    if (llx < urx) {
-      snapped.push_back(RowInterval{llx, urx});
+void subtractSpan(std::vector<Span>* spans, int64_t cut0, int64_t cut1) {
+    if (cut0 >= cut1) {
+        return;
     }
-  }
-  return snapped;
+    std::vector<Span> next;
+    for (const auto& span : *spans) {
+        if (cut1 <= span.x0 || cut0 >= span.x1) {
+            next.push_back(span);
+            continue;
+        }
+        if (span.x0 < cut0) {
+            next.push_back(Span{span.x0, std::min(cut0, span.x1)});
+        }
+        if (cut1 < span.x1) {
+            next.push_back(Span{std::max(cut1, span.x0), span.x1});
+        }
+    }
+    *spans = next;
 }
 
 }  // namespace
 
-RowBuildResult buildRowIntervals(const PlacementModel &model) {
-  RowBuildResult result;
-  if (!isValid(model.die) || model.site_width <= 0 || model.site_height <= 0) {
-    result.error = "invalid die or site dimensions";
-    return result;
-  }
-
-  Coord row_count_coord = height(model.die) / model.site_height;
-  if (row_count_coord <= 0) {
-    result.error = "die does not contain a full site row";
-    return result;
-  }
-
-  bool has_legal_interval = false;
-  result.rows.reserve(static_cast<std::size_t>(row_count_coord));
-  for (Coord i = 0; i < row_count_coord; ++i) {
-    SiteRow row;
-    row.index = static_cast<int>(i);
-    row.y = model.die.lly + i * model.site_height;
-    row.intervals.push_back(RowInterval{model.die.llx, model.die.urx});
-
-    Rect row_rect{model.die.llx, row.y, model.die.urx, row.y + model.site_height};
-    for (const Obstacle &obstacle : model.obstacles) {
-      Rect clipped = intersection(row_rect, obstacle.rect);
-      if (!isValid(clipped)) {
-        continue;
-      }
-      subtractSpan(&row.intervals, clipped.llx, clipped.urx);
+std::vector<RowInterval> buildRowIntervals(const PlacementModel& model) {
+    model.validateBasic();
+    int64_t total_cell_width = 0;
+    int64_t min_cell_width = 0;
+    for (size_t id : model.cell_ids) {
+        const auto& inst = model.instances[id];
+        if (!model.isSingleRowCell(id)) {
+            throw PlacementError("unsupported movable cell height for " + inst.name +
+                                 ": expected one site row");
+        }
+        total_cell_width += model.width(inst);
+        min_cell_width = min_cell_width == 0 ? model.width(inst)
+                                             : std::min(min_cell_width, model.width(inst));
     }
-    row.intervals = snapIntervals(model, row.intervals);
-    if (!row.intervals.empty()) {
-      has_legal_interval = true;
-    }
-    result.rows.push_back(std::move(row));
-  }
 
-  if (!has_legal_interval) {
-    result.error = "no legal row interval remains after subtracting obstacles";
-    return result;
-  }
-  result.ok = true;
-  return result;
+    std::vector<RowInterval> intervals;
+    int64_t total_capacity = 0;
+    const int rows = model.rowCount();
+    for (int row = 0; row < rows; ++row) {
+        const int64_t y = model.rowY(row);
+        Rect row_rect{model.die.x0, y, model.die.x1, y + model.site_height};
+        std::vector<Span> spans{Span{model.die.x0, model.die.x1}};
+
+        for (size_t obs_id : model.obstacle_ids) {
+            const Rect& obs = model.instances[obs_id].original;
+            if (!overlaps(row_rect, obs)) {
+                continue;
+            }
+            subtractSpan(&spans, std::max(model.die.x0, obs.x0), std::min(model.die.x1, obs.x1));
+        }
+
+        std::sort(spans.begin(), spans.end(), [](const Span& a, const Span& b) {
+            if (a.x0 != b.x0) return a.x0 < b.x0;
+            return a.x1 < b.x1;
+        });
+
+        for (const auto& span : spans) {
+            int64_t x0 = snapUpToGrid(span.x0, model.die.x0, model.site_width);
+            int64_t x1 = snapDownToGrid(span.x1, model.die.x0, model.site_width);
+            if (x1 > x0 && (model.cell_ids.empty() || x1 - x0 >= min_cell_width)) {
+                intervals.push_back(RowInterval{row, y, x0, x1});
+                total_capacity += x1 - x0;
+            }
+        }
+    }
+
+    if (!model.cell_ids.empty() && intervals.empty()) {
+        throw PlacementError("no legal row intervals after subtracting obstacles");
+    }
+    if (total_capacity < total_cell_width) {
+        std::ostringstream oss;
+        oss << "insufficient legal row capacity: need " << total_cell_width << " DBU, have "
+            << total_capacity << " DBU";
+        throw PlacementError(oss.str());
+    }
+    return intervals;
 }
 
 }  // namespace legalizer

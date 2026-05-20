@@ -2,24 +2,23 @@
 
 ## Goal
 
-Compute density-overflow pressure for trial scoring and exact final DOR for validation.
+Maintain 10um density-grid information for candidate scoring and compute exact DOR for validation.
 
 ## Inputs
 
-- `doc/proposal.md`: DOR is based on 10um by 10um grids whose non-macro movable density exceeds `threshold`.
-- `doc/detailed-design.md`: Grid size is `10 * dbu_per_micron`, macro-covered grids are excluded, and final DOR uses exact cell-grid overlap area.
+- `doc/proposal.md`: `alpha` and `threshold` driven density-aware scoring and exact DOR validation.
+- `doc/detailed-design.md`: Density Estimator grid construction, macro-bin exclusion, strict overflow comparison, and candidate penalty behavior.
 
 ## Tasks
 
-- [ ] Implement `src/density_estimator.{h,cpp}` with grid construction from die bounds and DBU-per-micron.
-- [ ] Mark macro-covered grids as excluded from the DOR denominator.
-- [ ] Accumulate exact movable-cell overlap area into all touched grids for final DOR.
-- [ ] Provide a lightweight trial penalty API for candidate row scoring.
-- [ ] Treat `threshold` as a percentage and compare density using `> threshold`.
-- [ ] Add tests for empty placement, known overflow grid, macro exclusion, boundary-spanning cells, and threshold comparison.
+- [x] Build ceil-divided 10um by 10um bins in DBU, clipping edge bins to die bounds.
+- [x] Exclude bins that overlap any `MACRO` while keeping blockage-covered bins countable.
+- [x] Implement exact DOR recomputation from movable cell placements using overlap area per bin.
+- [x] Implement local candidate overflow-pressure estimation for trial placements.
+- [x] Handle invalid DBU and no-countable-bin cases with clear diagnostics or warning metrics.
+- [x] Add tests for grid sizing, macro exclusion, strict `density > threshold`, exact DOR, and candidate penalty monotonicity.
 
 ## Done When
 
-- [ ] Exact final DOR is computed from placed cell rectangles.
-- [ ] Trial scoring can query density pressure without owning placement decisions.
-- [ ] Density tests pass under `make test`.
+- [x] Exact DOR matches the documented flow-compatible rules on small fixtures.
+- [x] Candidate penalty increases when a trial adds area to already-over-threshold bins.

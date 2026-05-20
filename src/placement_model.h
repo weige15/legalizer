@@ -2,66 +2,99 @@
 #define PLACEMENT_MODEL_H
 
 #include <cstdint>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace legalizer {
 
-using Coord = long long;
+struct Point {
+    int64_t x = 0;
+    int64_t y = 0;
+};
 
 struct Rect {
-  Coord llx = 0;
-  Coord lly = 0;
-  Coord urx = 0;
-  Coord ury = 0;
+    int64_t x0 = 0;
+    int64_t y0 = 0;
+    int64_t x1 = 0;
+    int64_t y1 = 0;
 };
 
-enum class ObstacleType {
-  Macro,
-  Blockage,
+enum class InstanceType {
+    Cell,
+    Macro,
+    Blockage
 };
 
-struct Cell {
-  std::string name;
-  Rect original;
-  Rect placed;
-  bool has_placement = false;
-  std::size_t input_index = 0;
+struct Instance {
+    std::string name;
+    Rect original;
+    InstanceType type = InstanceType::Cell;
+    size_t input_order = 0;
 };
 
-struct Obstacle {
-  std::string name;
-  Rect rect;
-  ObstacleType type = ObstacleType::Macro;
+struct RowInterval {
+    int row_index = 0;
+    int64_t y = 0;
+    int64_t x0 = 0;
+    int64_t x1 = 0;
 };
 
-struct PlacementModel {
-  int dbu_per_micron = 0;
-  Rect die;
-  Coord site_width = 0;
-  Coord site_height = 0;
-  std::vector<Cell> cells;
-  std::vector<Obstacle> obstacles;
+struct Metrics {
+    double avg_displacement_um = 0.0;
+    double normalized_displacement = 0.0;
+    double dor_percent = 0.0;
+    double flow_quality = 0.0;
+    double handout_quality = 0.0;
 };
 
-Rect makeRect(Coord llx, Coord lly, Coord width, Coord height);
-Coord width(const Rect &rect);
-Coord height(const Rect &rect);
-long long area(const Rect &rect);
-bool isValid(const Rect &rect);
-bool overlaps(const Rect &a, const Rect &b);
-bool contains(const Rect &outer, const Rect &inner);
-Rect intersection(const Rect &a, const Rect &b);
-Coord alignUp(Coord value, Coord origin, Coord step);
-Coord alignDown(Coord value, Coord origin, Coord step);
-Coord nearestAligned(Coord value, Coord origin, Coord step);
-bool isAligned(Coord value, Coord origin, Coord step);
-bool isSiteAlignedX(const PlacementModel &model, Coord x);
-bool isRowAlignedY(const PlacementModel &model, Coord y);
-bool isSingleRowCell(const PlacementModel &model, const Cell &cell);
-double dbuToMicron(const PlacementModel &model, Coord value);
-double manhattanMicron(const PlacementModel &model, const Rect &a, const Rect &b);
-Rect movedRect(const Rect &shape, Coord llx, Coord lly);
+struct ValidationResult {
+    bool ok = false;
+    std::vector<std::string> errors;
+    Metrics metrics;
+};
+
+class PlacementError : public std::runtime_error {
+public:
+    explicit PlacementError(const std::string& message) : std::runtime_error(message) {}
+};
+
+class PlacementModel {
+public:
+    int64_t dbu_per_micron = 0;
+    Rect die;
+    int64_t site_width = 0;
+    int64_t site_height = 0;
+    std::vector<Instance> instances;
+    std::vector<size_t> cell_ids;
+    std::vector<size_t> obstacle_ids;
+
+    void validateBasic() const;
+    void rebuildIndexes();
+
+    int64_t width(const Instance& inst) const;
+    int64_t height(const Instance& inst) const;
+    int64_t dieWidth() const;
+    int64_t dieHeight() const;
+    int rowCount() const;
+    int rowIndexForY(int64_t y) const;
+    int64_t rowY(int row_index) const;
+    bool isRowAligned(int64_t y) const;
+    bool isSiteAlignedX(int64_t x) const;
+    bool isSingleRowCell(size_t id) const;
+    Rect rectAt(size_t id, Point ll) const;
+    double dbuToMicron(int64_t value) const;
+};
+
+std::string typeToString(InstanceType type);
+InstanceType parseInstanceType(const std::string& text);
+bool overlaps(const Rect& a, const Rect& b);
+int64_t overlapArea(const Rect& a, const Rect& b);
+bool contains(const Rect& outer, const Rect& inner);
+int64_t snapUpToGrid(int64_t x, int64_t origin, int64_t step);
+int64_t snapDownToGrid(int64_t x, int64_t origin, int64_t step);
+int64_t manhattan(const Point& a, const Point& b);
 
 }  // namespace legalizer
 

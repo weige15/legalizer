@@ -4,17 +4,12 @@
 #include "placement_model.h"
 
 #include <string>
+#include <vector>
 
 namespace legalizer {
 
-struct WriteResult {
-  bool ok = false;
-  std::string error;
-};
-
-std::string formatMicron(double value);
-bool isSafeTclBracedName(const std::string &name);
-WriteResult writePlacementTcl(const PlacementModel &model, const std::string &path);
+void writeTcl(const PlacementModel& model, const std::vector<Point>& placements,
+              const std::string& output_path);
 
 }  // namespace legalizer
 

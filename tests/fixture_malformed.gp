@@ -1,8 +1,8 @@
-DBU_Per_Micron 100
+DBU_Per_Micron 1000
 DieArea_LL 0 0
-DieArea_UR 100 10
-Site_Width 10
-Site_Height 10
+DieArea_UR 10000 2000
+Site_Width 100
+Site_Height 1000
 
 Name LLX LLY Width Height Type
-bad 0 0 -10 10 CELL
+u0 0 0 -100 1000 CELL

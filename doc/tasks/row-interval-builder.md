@@ -2,23 +2,23 @@
 
 ## Goal
 
-Convert the die area and fixed obstacles into snapped legal row intervals that can contain movable cells.
+Build legal placement row intervals by subtracting fixed macros and blockages from every site row.
 
 ## Inputs
 
-- `doc/proposal.md`: Rows are sliced by `MACRO` and `BLOCKAGE` regions and snapped to site columns.
-- `doc/detailed-design.md`: Builder computes full rows, subtracts obstacle x-spans from overlapping rows, clips to die, and drops unusable intervals.
+- `doc/proposal.md`: Row interval construction, obstacle avoidance, site snapping, and capacity precheck intent.
+- `doc/detailed-design.md`: Row Interval Builder module behavior, macro/blockage subtraction, sorting, and snapping rules.
 
 ## Tasks
 
-- [ ] Implement `src/row_interval_builder.{h,cpp}` with row and interval data structures.
-- [ ] Generate full-height site rows from die bounds and site height while preserving empty row indexes.
-- [ ] Subtract clipped macro and blockage spans from every overlapping row.
-- [ ] Snap interval starts upward and interval ends downward to legal site columns.
-- [ ] Add tests for empty die rows, middle macro split, edge blockage clipping, non-site-aligned obstacle snapping, and multi-row obstacle overlap.
+- [x] Generate site rows from die lower Y through the last full site-height row.
+- [x] Start each row with the full die-width interval and subtract obstacle horizontal overlap for vertically intersecting obstacles.
+- [x] Snap interval starts up and interval ends down to legal site columns.
+- [x] Discard intervals narrower than the minimum movable cell width and keep remaining intervals sorted.
+- [x] Report no-capacity and insufficient-total-capacity diagnostics before legalization.
+- [x] Add tests for empty rows, centered macro splits, edge clipping, off-row obstacles, and partial-site fragments.
 
 ## Done When
 
-- [ ] Every row interval represents only legal, site-aligned horizontal placement space.
-- [ ] Inputs with no legal interval fail early with a clear diagnostic.
-- [ ] Row interval tests pass under `make test`.
+- [x] Every interval is site-aligned, inside the die, and free of fixed obstacles.
+- [x] Synthetic interval tests pass for split, clip, and discard behavior.

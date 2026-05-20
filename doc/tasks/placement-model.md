@@ -2,23 +2,23 @@
 
 ## Goal
 
-Provide canonical geometry, cell, obstacle, and coordinate helper types shared by every legalizer module.
+Create the shared DBU geometry model, instance storage, placement state, and metric data contracts used by all modules.
 
 ## Inputs
 
-- `doc/proposal.md`: Coordinates stay in integer DBU internally and original placements must be preserved for displacement reporting.
-- `doc/detailed-design.md`: Rectangles use half-open bounds and expose helpers for containment, overlap, row/site conversion, and DBU-to-micron conversion.
+- `doc/proposal.md`: Integer DBU normalization, movable/fixed instance separation, original coordinate preservation, and single-row scope assumptions.
+- `doc/detailed-design.md`: Placement Model module types, half-open rectangle contract, helper functions, and unsupported multi-row handling.
 
 ## Tasks
 
-- [ ] Implement `src/placement_model.{h,cpp}` with `Rect`, `Cell`, `Obstacle`, and `PlacementModel` data types.
-- [ ] Derive `urx` and `ury` from lower-left coordinates plus dimensions at parse time.
-- [ ] Add geometry helpers for area, overlap, containment, row alignment, site alignment, and coordinate conversion.
-- [ ] Track original and placed rectangles separately for each movable cell.
-- [ ] Add model tests for overlap semantics, containment, conversion, site-grid alignment, and multi-row-height detection.
+- [x] Implement `Point`, `Rect`, `Instance`, `RowInterval`, `Metrics`, and instance type definitions.
+- [x] Store all coordinates and dimensions as signed 64-bit DBU values with half-open rectangle semantics.
+- [x] Add geometry helpers for overlap, overlap area, site snapping, row conversion, and alignment checks.
+- [x] Partition movable `CELL` instances from fixed `MACRO` and `BLOCKAGE` instances with stable cell ids.
+- [x] Reject invalid model metadata, invalid instance dimensions, unknown types, and unsupported multi-row movable cells.
+- [x] Add direct unit tests for overlap edges, snapping, row conversion, partitioning, and multi-row detection.
 
 ## Done When
 
-- [ ] All downstream modules can use the same DBU geometry types without duplicating rectangle logic.
-- [ ] Original placement data remains available after legalization.
-- [ ] Geometry helper tests pass under `make test`.
+- [x] Other modules can use typed model objects without raw string parsing or micron conversion.
+- [x] Geometry unit tests pass for touching-edge and true-overlap cases.

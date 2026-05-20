@@ -3,39 +3,30 @@
 
 #include "placement_model.h"
 
-#include <string>
 #include <vector>
 
 namespace legalizer {
 
-struct DensityResult {
-  int total_grids = 0;
-  int overflow_grids = 0;
-  double dor = 0.0;
+struct DensitySummary {
+    int total_bins = 0;
+    int overflow_bins = 0;
+    double dor_percent = 0.0;
 };
 
-class DensityGrid {
- public:
-  explicit DensityGrid(const PlacementModel &model);
+DensitySummary computeDensitySummary(const PlacementModel& model,
+                                     const std::vector<Point>& placements,
+                                     double threshold);
 
-  void clearMovableArea();
-  void addRect(const Rect &rect, double sign = 1.0);
-  DensityResult compute(double threshold_percent) const;
-  double trialPenalty(const Rect &rect, double threshold_percent) const;
+ValidationResult validatePlacement(const PlacementModel& model, const std::vector<Point>& placements,
+                                   const std::vector<RowInterval>& intervals, double alpha,
+                                   double threshold);
 
- private:
-  Rect gridRect(int gx, int gy) const;
-  std::size_t index(int gx, int gy) const;
-
-  const PlacementModel &model_;
-  Coord grid_size_ = 0;
-  int cols_ = 0;
-  int rows_ = 0;
-  std::vector<double> movable_area_;
-  std::vector<bool> excluded_;
-};
-
-DensityResult computeFinalDensity(const PlacementModel &model, double threshold_percent);
+double estimateLocalDensityPenalty(const PlacementModel& model,
+                                   const std::vector<Point>& placements,
+                                   const std::vector<bool>& placed,
+                                   size_t trial_cell_id,
+                                   Point trial_ll,
+                                   double threshold);
 
 }  // namespace legalizer
 

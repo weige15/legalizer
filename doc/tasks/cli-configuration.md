@@ -2,23 +2,22 @@
 
 ## Goal
 
-Implement the `Legalizer` command-line entry point and top-level pipeline orchestration for the required assignment interface.
+Implement the command-line entry point and pipeline orchestration for `./Legalizer <alpha> <threshold> <input>.gp <output>.tcl`.
 
 ## Inputs
 
-- `doc/proposal.md`: Required invocation is `./Legalizer <alpha> <threshold> <input.gp> <output.tcl>`.
-- `doc/detailed-design.md`: CLI validates arguments, builds config, runs parse, row build, legalize, check, and write steps.
+- `doc/proposal.md`: Required assignment interface, exit behavior, and validation-before-write requirement.
+- `doc/detailed-design.md`: CLI / Configuration module contract, run configuration fields, and integration test expectations.
 
 ## Tasks
 
-- [ ] Create `src/main.cpp` and a small config parsing function for `alpha`, `threshold`, input path, and output path.
-- [ ] Reject malformed argument counts, non-finite numeric values, and `alpha` values outside `[0, 1]`.
-- [ ] Wire the top-level pipeline through parser, row interval builder, legalizer, checker, and TCL writer.
-- [ ] Print concise `stderr` diagnostics and return nonzero for parse, legalization, validation, or write failures.
-- [ ] Add smoke coverage for bad arguments and a tiny valid fixture through the test runner.
+- [x] Define `RunConfig` with `alpha`, `threshold`, input path, and output path.
+- [x] Validate exactly four user arguments and parse finite numeric values in the required ranges.
+- [x] Implement a narrow `run(config)` pipeline that calls parser, row interval builder, legalizer, validator, and writer.
+- [x] Route module failures to concise `stderr` diagnostics and nonzero exits without touching output on early failure.
+- [x] Add smoke coverage for missing args, malformed numbers, and a one-cell successful run.
 
 ## Done When
 
-- [ ] `./Legalizer <alpha> <threshold> <input.gp> <output.tcl>` runs the full pipeline.
-- [ ] CLI failures produce nonzero exit status without writing misleading placement output.
-- [ ] `make test` covers argument parsing and at least one executable smoke case.
+- [x] `./Legalizer` rejects invalid invocation forms with nonzero status.
+- [x] A valid small fixture runs through the same CLI path and writes only placement TCL.

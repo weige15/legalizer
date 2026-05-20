@@ -1,206 +1,164 @@
 #include "gp_parser.h"
 
+#include <cerrno>
+#include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
-#include <set>
 #include <sstream>
-#include <vector>
 
 namespace legalizer {
+
 namespace {
 
-std::string trim(const std::string &s) {
-  std::size_t first = s.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) {
-    return "";
-  }
-  std::size_t last = s.find_last_not_of(" \t\r\n");
-  return s.substr(first, last - first + 1);
-}
-
-bool parseInteger(const std::string &token, Coord *value) {
-  if (token.empty()) {
-    return false;
-  }
-  std::size_t pos = 0;
-  try {
-    long long parsed = std::stoll(token, &pos, 10);
-    if (pos != token.size()) {
-      return false;
+std::string trim(const std::string& s) {
+    size_t a = 0;
+    while (a < s.size() && std::isspace(static_cast<unsigned char>(s[a]))) {
+        ++a;
     }
-    *value = parsed;
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-std::vector<std::string> split(const std::string &line) {
-  std::istringstream iss(line);
-  std::vector<std::string> out;
-  std::string tok;
-  while (iss >> tok) {
-    out.push_back(tok);
-  }
-  return out;
-}
-
-bool readRequiredLine(std::ifstream &in, std::string *line, int *line_no) {
-  while (std::getline(in, *line)) {
-    ++(*line_no);
-    if (!trim(*line).empty()) {
-      return true;
+    size_t b = s.size();
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) {
+        --b;
     }
-  }
-  return false;
+    return s.substr(a, b - a);
 }
 
-bool parseOneValue(const std::vector<std::string> &tokens, const std::string &key,
-                   Coord *value, std::string *error, int line_no) {
-  if (tokens.size() != 2 || tokens[0] != key || !parseInteger(tokens[1], value)) {
-    *error = "line " + std::to_string(line_no) + ": expected '" + key + " <integer>'";
-    return false;
-  }
-  return true;
+[[noreturn]] void parseFail(int line, const std::string& reason) {
+    throw PlacementError("parse error at line " + std::to_string(line) + ": " + reason);
 }
 
-bool parseTwoValues(const std::vector<std::string> &tokens, const std::string &key,
-                    Coord *a, Coord *b, std::string *error, int line_no) {
-  if (tokens.size() != 3 || tokens[0] != key || !parseInteger(tokens[1], a) ||
-      !parseInteger(tokens[2], b)) {
-    *error = "line " + std::to_string(line_no) + ": expected '" + key +
-             " <integer> <integer>'";
-    return false;
-  }
-  return true;
+int64_t parseI64(const std::string& text, int line, const std::string& field) {
+    if (text.empty()) {
+        parseFail(line, "missing integer field " + field);
+    }
+    char* end = nullptr;
+    errno = 0;
+    long long v = std::strtoll(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0') {
+        parseFail(line, "invalid integer for " + field + ": " + text);
+    }
+    return static_cast<int64_t>(v);
 }
 
-ParseResult fail(const std::string &msg) {
-  ParseResult result;
-  result.error = msg;
-  return result;
+void expectMeta(const std::string& line, int line_no, const std::string& key,
+                std::vector<int64_t>* values) {
+    std::istringstream iss(line);
+    std::string got;
+    iss >> got;
+    if (got != key) {
+        parseFail(line_no, "expected " + key);
+    }
+    std::string token;
+    while (iss >> token) {
+        values->push_back(parseI64(token, line_no, key));
+    }
+    std::string extra;
+    if (iss.fail() && !iss.eof()) {
+        parseFail(line_no, "malformed metadata for " + key);
+    }
+}
+
+Rect makeRect(int64_t x, int64_t y, int64_t w, int64_t h, int line) {
+    if (w <= 0 || h <= 0) {
+        parseFail(line, "instance dimensions must be positive");
+    }
+    if (x > std::numeric_limits<int64_t>::max() - w ||
+        y > std::numeric_limits<int64_t>::max() - h) {
+        parseFail(line, "instance coordinate overflow");
+    }
+    return Rect{x, y, x + w, y + h};
 }
 
 }  // namespace
 
-ParseResult parseGpFile(const std::string &path) {
-  std::ifstream in(path);
-  if (!in) {
-    return fail("cannot open input file '" + path + "'");
-  }
+PlacementModel parseGpFile(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw PlacementError("unable to open input file: " + path);
+    }
 
-  PlacementModel model;
-  std::string line;
-  int line_no = 0;
-  std::string error;
-  Coord llx = 0;
-  Coord lly = 0;
-  Coord urx = 0;
-  Coord ury = 0;
-  Coord value = 0;
+    PlacementModel model;
+    std::string line;
+    int line_no = 0;
 
-  const std::vector<std::string> keys = {
-      "DBU_Per_Micron", "DieArea_LL", "DieArea_UR", "Site_Width", "Site_Height"};
-  for (const std::string &key : keys) {
-    if (!readRequiredLine(in, &line, &line_no)) {
-      return fail("missing metadata line for " + key);
-    }
-    std::vector<std::string> tokens = split(line);
-    if (key == "DBU_Per_Micron") {
-      if (!parseOneValue(tokens, key, &value, &error, line_no)) {
-        return fail(error);
-      }
-      if (value <= 0 || value > std::numeric_limits<int>::max()) {
-        return fail("line " + std::to_string(line_no) + ": DBU_Per_Micron must be positive");
-      }
-      model.dbu_per_micron = static_cast<int>(value);
-    } else if (key == "DieArea_LL") {
-      if (!parseTwoValues(tokens, key, &llx, &lly, &error, line_no)) {
-        return fail(error);
-      }
-    } else if (key == "DieArea_UR") {
-      if (!parseTwoValues(tokens, key, &urx, &ury, &error, line_no)) {
-        return fail(error);
-      }
-      model.die = Rect{llx, lly, urx, ury};
-      if (!isValid(model.die)) {
-        return fail("line " + std::to_string(line_no) + ": die area must have positive size");
-      }
-    } else if (key == "Site_Width") {
-      if (!parseOneValue(tokens, key, &value, &error, line_no)) {
-        return fail(error);
-      }
-      if (value <= 0) {
-        return fail("line " + std::to_string(line_no) + ": Site_Width must be positive");
-      }
-      model.site_width = value;
-    } else if (key == "Site_Height") {
-      if (!parseOneValue(tokens, key, &value, &error, line_no)) {
-        return fail(error);
-      }
-      if (value <= 0) {
-        return fail("line " + std::to_string(line_no) + ": Site_Height must be positive");
-      }
-      model.site_height = value;
-    }
-  }
+    auto nextLine = [&]() -> std::string {
+        if (!std::getline(in, line)) {
+            parseFail(line_no + 1, "unexpected end of file");
+        }
+        ++line_no;
+        return trim(line);
+    };
 
-  if (!readRequiredLine(in, &line, &line_no)) {
-    return fail("missing instance table header");
-  }
-  if (split(line) != std::vector<std::string>{"Name", "LLX", "LLY", "Width", "Height", "Type"}) {
-    return fail("line " + std::to_string(line_no) +
-                ": expected header 'Name LLX LLY Width Height Type'");
-  }
+    std::vector<int64_t> vals;
+    vals.clear();
+    expectMeta(nextLine(), line_no, "DBU_Per_Micron", &vals);
+    if (vals.size() != 1) parseFail(line_no, "DBU_Per_Micron expects one value");
+    model.dbu_per_micron = vals[0];
 
-  std::set<std::string> names;
-  std::size_t input_index = 0;
-  while (std::getline(in, line)) {
-    ++line_no;
-    if (trim(line).empty()) {
-      continue;
-    }
-    std::vector<std::string> tokens = split(line);
-    if (tokens.size() != 6) {
-      return fail("line " + std::to_string(line_no) + ": expected six instance fields");
-    }
-    if (!names.insert(tokens[0]).second) {
-      return fail("line " + std::to_string(line_no) + ": duplicate instance name '" + tokens[0] + "'");
-    }
-    Coord x = 0;
-    Coord y = 0;
-    Coord w = 0;
-    Coord h = 0;
-    if (!parseInteger(tokens[1], &x) || !parseInteger(tokens[2], &y) ||
-        !parseInteger(tokens[3], &w) || !parseInteger(tokens[4], &h)) {
-      return fail("line " + std::to_string(line_no) + ": malformed integer in instance row");
-    }
-    if (w <= 0 || h <= 0) {
-      return fail("line " + std::to_string(line_no) + ": instance dimensions must be positive");
-    }
-    Rect rect = makeRect(x, y, w, h);
-    if (tokens[5] == "CELL") {
-      Cell cell;
-      cell.name = tokens[0];
-      cell.original = rect;
-      cell.placed = rect;
-      cell.input_index = input_index++;
-      model.cells.push_back(cell);
-    } else if (tokens[5] == "MACRO" || tokens[5] == "BLOCKAGE") {
-      Obstacle obstacle;
-      obstacle.name = tokens[0];
-      obstacle.rect = rect;
-      obstacle.type = tokens[5] == "MACRO" ? ObstacleType::Macro : ObstacleType::Blockage;
-      model.obstacles.push_back(obstacle);
-    } else {
-      return fail("line " + std::to_string(line_no) + ": unknown instance type '" + tokens[5] + "'");
-    }
-  }
+    vals.clear();
+    expectMeta(nextLine(), line_no, "DieArea_LL", &vals);
+    if (vals.size() != 2) parseFail(line_no, "DieArea_LL expects two values");
+    model.die.x0 = vals[0];
+    model.die.y0 = vals[1];
 
-  ParseResult result;
-  result.ok = true;
-  result.model = std::move(model);
-  return result;
+    vals.clear();
+    expectMeta(nextLine(), line_no, "DieArea_UR", &vals);
+    if (vals.size() != 2) parseFail(line_no, "DieArea_UR expects two values");
+    model.die.x1 = vals[0];
+    model.die.y1 = vals[1];
+
+    vals.clear();
+    expectMeta(nextLine(), line_no, "Site_Width", &vals);
+    if (vals.size() != 1) parseFail(line_no, "Site_Width expects one value");
+    model.site_width = vals[0];
+
+    vals.clear();
+    expectMeta(nextLine(), line_no, "Site_Height", &vals);
+    if (vals.size() != 1) parseFail(line_no, "Site_Height expects one value");
+    model.site_height = vals[0];
+
+    std::string header = nextLine();
+    if (header.empty()) {
+        header = nextLine();
+    }
+    if (header != "Name LLX LLY Width Height Type") {
+        parseFail(line_no, "expected column header");
+    }
+
+    while (std::getline(in, line)) {
+        ++line_no;
+        std::string t = trim(line);
+        if (t.empty()) {
+            continue;
+        }
+        std::istringstream iss(t);
+        std::string name;
+        std::string sx;
+        std::string sy;
+        std::string sw;
+        std::string sh;
+        std::string stype;
+        std::string extra;
+        if (!(iss >> name >> sx >> sy >> sw >> sh >> stype) || (iss >> extra)) {
+            parseFail(line_no, "instance record must have six fields");
+        }
+        Instance inst;
+        inst.name = name;
+        inst.original = makeRect(parseI64(sx, line_no, "LLX"), parseI64(sy, line_no, "LLY"),
+                                 parseI64(sw, line_no, "Width"),
+                                 parseI64(sh, line_no, "Height"), line_no);
+        try {
+            inst.type = parseInstanceType(stype);
+        } catch (const PlacementError&) {
+            parseFail(line_no, "unknown type: " + stype);
+        }
+        inst.input_order = model.instances.size();
+        model.instances.push_back(inst);
+    }
+
+    model.validateBasic();
+    model.rebuildIndexes();
+    return model;
 }
 
 }  // namespace legalizer

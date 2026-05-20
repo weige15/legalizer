@@ -1,434 +1,405 @@
 #include "legalizer.h"
 
+#include "density_estimator.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <map>
-#include <set>
-#include <utility>
+#include <numeric>
+#include <sstream>
 
 namespace legalizer {
+
 namespace {
 
-struct IntervalState {
-  int row_index = 0;
-  int interval_index = 0;
-  RowInterval interval;
-  std::vector<int> cells;
+constexpr int kInitialRowWindow = 8;
+constexpr int kMaxCandidateTrials = 80;
+constexpr int kRepairCells = 80;
+constexpr int kRepairPasses = 2;
+constexpr double kEdgePenaltyWeight = 0.0001;
+
+struct Cluster {
+    std::vector<size_t> ids;
+    int64_t width = 0;
+    int64_t weight = 0;
+    long double q = 0.0;
+    int64_t x = 0;
 };
 
-struct TrialPlacement {
-  bool feasible = false;
-  double score = 0.0;
-  int state_index = -1;
-  std::vector<std::pair<int, Rect>> placements;
+struct PassState {
+    std::vector<Point> placements;
+    std::vector<bool> placed;
+    std::vector<std::vector<size_t>> assigned;
+    std::vector<int> cell_interval;
+    std::vector<int64_t> used_width;
 };
 
-Coord clampAligned(Coord value, Coord lo, Coord hi, const PlacementModel &model) {
-  if (hi < lo) {
-    return lo;
-  }
-  Coord aligned = nearestAligned(value, model.die.llx, model.site_width);
-  if (aligned < lo) {
-    return alignUp(lo, model.die.llx, model.site_width);
-  }
-  if (aligned > hi) {
-    return alignDown(hi, model.die.llx, model.site_width);
-  }
-  return aligned;
+Point originalPoint(const PlacementModel& model, size_t id) {
+    const Rect& r = model.instances[id].original;
+    return Point{r.x0, r.y0};
 }
 
-bool orderBefore(const PlacementModel &model, int a, int b) {
-  const Cell &ca = model.cells[static_cast<std::size_t>(a)];
-  const Cell &cb = model.cells[static_cast<std::size_t>(b)];
-  if (ca.original.llx != cb.original.llx) {
-    return ca.original.llx < cb.original.llx;
-  }
-  if (ca.original.lly != cb.original.lly) {
-    return ca.original.lly < cb.original.lly;
-  }
-  if (ca.name != cb.name) {
-    return ca.name < cb.name;
-  }
-  return ca.input_index < cb.input_index;
+int64_t rounded(long double v) {
+    return static_cast<int64_t>(std::llround(v));
 }
 
-std::vector<int> sortedSequenceWithCandidate(const PlacementModel &model,
-                                             const IntervalState &state,
-                                             int candidate_id) {
-  std::vector<int> sequence = state.cells;
-  sequence.push_back(candidate_id);
-  std::sort(sequence.begin(), sequence.end(),
-            [&](int a, int b) { return orderBefore(model, a, b); });
-  return sequence;
+void collapseCluster(const PlacementModel& model, const RowInterval& interval, Cluster* cluster) {
+    const int64_t max_x = snapDownToGrid(interval.x1 - cluster->width, model.die.x0, model.site_width);
+    int64_t x = rounded(cluster->q / static_cast<long double>(cluster->weight));
+    x = snapDownToGrid(x + model.site_width / 2, model.die.x0, model.site_width);
+    x = std::max(interval.x0, std::min(max_x, x));
+    cluster->x = x;
 }
 
-bool solveIntervalSequence(const PlacementModel &model, const RowInterval &interval,
-                           Coord row_y, const std::vector<int> &sequence,
-                           std::vector<std::pair<int, Rect>> *placements) {
-  const int n = static_cast<int>(sequence.size());
-  if (n == 0) {
+Cluster mergeClusters(const RowInterval& interval, const PlacementModel& model, const Cluster& a,
+                      const Cluster& b) {
+    (void)model;
+    Cluster merged;
+    merged.ids = a.ids;
+    merged.ids.insert(merged.ids.end(), b.ids.begin(), b.ids.end());
+    merged.width = a.width + b.width;
+    merged.weight = a.weight + b.weight;
+    merged.q = a.q + b.q - static_cast<long double>(a.width) * b.weight;
+    collapseCluster(model, interval, &merged);
+    return merged;
+}
+
+std::vector<int> candidateIntervals(const PlacementModel& model,
+                                    const std::vector<RowInterval>& intervals, size_t cell_id,
+                                    int64_t cell_width, const PassState& state,
+                                    bool full_fallback) {
+    std::vector<int> ids;
+    int target_row = model.rowIndexForY(model.instances[cell_id].original.y0);
+    if (target_row < 0) {
+        const int64_t rel = model.instances[cell_id].original.y0 - model.die.y0;
+        target_row = static_cast<int>((rel + model.site_height / 2) / model.site_height);
+        target_row = std::max(0, std::min(model.rowCount() - 1, target_row));
+    }
+    for (size_t i = 0; i < intervals.size(); ++i) {
+        const auto& interval = intervals[i];
+        if (interval.x1 - interval.x0 < cell_width) {
+            continue;
+        }
+        if (state.used_width[i] + cell_width > interval.x1 - interval.x0) {
+            continue;
+        }
+        if (!full_fallback && target_row >= 0 &&
+            std::abs(interval.row_index - target_row) > kInitialRowWindow) {
+            continue;
+        }
+        ids.push_back(static_cast<int>(i));
+    }
+    std::sort(ids.begin(), ids.end(), [&](int a, int b) {
+        const auto& ia = intervals[a];
+        const auto& ib = intervals[b];
+        const int da = target_row >= 0 ? std::abs(ia.row_index - target_row) : 0;
+        const int db = target_row >= 0 ? std::abs(ib.row_index - target_row) : 0;
+        if (da != db) return da < db;
+        const int64_t cx = model.instances[cell_id].original.x0;
+        const int64_t ca = std::max<int64_t>(0, std::max(ia.x0 - cx, cx - ia.x1));
+        const int64_t cb = std::max<int64_t>(0, std::max(ib.x0 - cx, cx - ib.x1));
+        if (ca != cb) return ca < cb;
+        return a < b;
+    });
+    return ids;
+}
+
+double rowLoadPenalty(const RowInterval& interval, int64_t used_after) {
+    const double width = static_cast<double>(interval.x1 - interval.x0);
+    if (width <= 0.0) {
+        return 1e9;
+    }
+    const double load = static_cast<double>(used_after) / width;
+    return load * load * 100.0;
+}
+
+void applySolvedRow(const PlacementModel& model, int interval_id,
+                    const std::vector<RowInterval>& intervals, const std::vector<Point>& solved,
+                    PassState* state) {
+    const auto& ids = state->assigned[interval_id];
+    for (size_t id : ids) {
+        state->placements[id] = solved[id];
+        state->placed[id] = true;
+        state->cell_interval[id] = interval_id;
+    }
+    (void)model;
+    (void)intervals;
+}
+
+bool insertCell(const PlacementModel& model, const std::vector<RowInterval>& intervals, size_t cell_id,
+                double alpha, double threshold, PassState* state, std::string* error) {
+    const int64_t cell_width = model.width(model.instances[cell_id]);
+    std::vector<int> cands = candidateIntervals(model, intervals, cell_id, cell_width, *state, false);
+    if (cands.empty()) {
+        cands = candidateIntervals(model, intervals, cell_id, cell_width, *state, true);
+    }
+    double best_score = std::numeric_limits<double>::infinity();
+    int best_interval = -1;
+    std::vector<Point> best_solved;
+    int trials = 0;
+
+    for (int interval_id : cands) {
+        if (trials++ >= kMaxCandidateTrials && best_interval >= 0) {
+            break;
+        }
+        std::vector<size_t> trial_cells = state->assigned[interval_id];
+        trial_cells.push_back(cell_id);
+        std::vector<Point> solved = solveRowInterval(model, intervals[interval_id], trial_cells);
+
+        double delta_dbu = 0.0;
+        for (size_t id : trial_cells) {
+            const Point orig = originalPoint(model, id);
+            const double new_d = static_cast<double>(manhattan(orig, solved[id]));
+            const double old_d = state->placed[id] ? static_cast<double>(manhattan(orig, state->placements[id])) : 0.0;
+            delta_dbu += new_d - old_d;
+        }
+        const double norm_delta =
+            (delta_dbu / static_cast<double>(model.dbu_per_micron)) * 18.2 /
+            static_cast<double>(std::max<size_t>(1, model.cell_ids.size()));
+        const double density = estimateLocalDensityPenalty(model, state->placements, state->placed,
+                                                           cell_id, solved[cell_id], threshold);
+        const double load = rowLoadPenalty(intervals[interval_id], state->used_width[interval_id] + cell_width);
+        const double edge =
+            (solved[cell_id].x == intervals[interval_id].x0 ||
+             solved[cell_id].x + cell_width == intervals[interval_id].x1)
+                ? kEdgePenaltyWeight
+                : 0.0;
+        const double score = alpha * norm_delta + (1.0 - alpha) * (0.45 * density + 0.55 * load) +
+                             edge + static_cast<double>(interval_id) * 1e-12;
+        if (score < best_score) {
+            best_score = score;
+            best_interval = interval_id;
+            best_solved = std::move(solved);
+        }
+    }
+
+    if (best_interval < 0) {
+        *error = "no feasible legal interval for " + model.instances[cell_id].name;
+        return false;
+    }
+    state->assigned[best_interval].push_back(cell_id);
+    state->used_width[best_interval] += cell_width;
+    applySolvedRow(model, best_interval, intervals, best_solved, state);
     return true;
-  }
-
-  std::vector<Coord> earliest(static_cast<std::size_t>(n));
-  std::vector<Coord> latest(static_cast<std::size_t>(n));
-
-  Coord cursor = interval.llx;
-  for (int i = 0; i < n; ++i) {
-    const Cell &cell = model.cells[static_cast<std::size_t>(sequence[i])];
-    Coord lo = alignUp(cursor, model.die.llx, model.site_width);
-    Coord hi = alignDown(interval.urx - width(cell.original), model.die.llx, model.site_width);
-    if (lo > hi) {
-      return false;
-    }
-    earliest[static_cast<std::size_t>(i)] = lo;
-    cursor = lo + width(cell.original);
-  }
-
-  cursor = interval.urx;
-  for (int i = n - 1; i >= 0; --i) {
-    const Cell &cell = model.cells[static_cast<std::size_t>(sequence[i])];
-    Coord hi = alignDown(cursor - width(cell.original), model.die.llx, model.site_width);
-    if (hi < earliest[static_cast<std::size_t>(i)]) {
-      return false;
-    }
-    latest[static_cast<std::size_t>(i)] = hi;
-    cursor = hi;
-  }
-
-  std::vector<Coord> xs(static_cast<std::size_t>(n));
-  Coord prev_end = interval.llx;
-  for (int i = 0; i < n; ++i) {
-    const Cell &cell = model.cells[static_cast<std::size_t>(sequence[i])];
-    Coord lo = std::max(earliest[static_cast<std::size_t>(i)],
-                        alignUp(prev_end, model.die.llx, model.site_width));
-    Coord hi = latest[static_cast<std::size_t>(i)];
-    if (lo > hi) {
-      return false;
-    }
-    xs[static_cast<std::size_t>(i)] = clampAligned(cell.original.llx, lo, hi, model);
-    prev_end = xs[static_cast<std::size_t>(i)] + width(cell.original);
-  }
-
-  placements->clear();
-  placements->reserve(sequence.size());
-  for (int i = 0; i < n; ++i) {
-    int id = sequence[static_cast<std::size_t>(i)];
-    const Cell &cell = model.cells[static_cast<std::size_t>(id)];
-    placements->push_back(std::make_pair(id, movedRect(cell.original, xs[static_cast<std::size_t>(i)], row_y)));
-  }
-  return true;
 }
 
-TrialPlacement makeTrial(const PlacementModel &model, const std::vector<SiteRow> &rows,
-                         const std::vector<IntervalState> &states, const DensityGrid &density,
-                         const LegalizeOptions &options, int cell_id, int state_index) {
-  TrialPlacement trial;
-  trial.state_index = state_index;
-  const Cell &cell = model.cells[static_cast<std::size_t>(cell_id)];
-  const IntervalState &state = states[static_cast<std::size_t>(state_index)];
-  if (width(cell.original) > width(Rect{state.interval.llx, 0, state.interval.urx, 1})) {
-    return trial;
-  }
-
-  std::vector<int> sequence = sortedSequenceWithCandidate(model, state, cell_id);
-  if (!solveIntervalSequence(model, state.interval,
-                             rows[static_cast<std::size_t>(state.row_index)].y,
-                             sequence, &trial.placements)) {
-    return trial;
-  }
-
-  double movement_delta = 0.0;
-  double disturbance = 0.0;
-  Rect candidate_rect;
-  for (const auto &entry : trial.placements) {
-    const Cell &placed_cell = model.cells[static_cast<std::size_t>(entry.first)];
-    double before = placed_cell.has_placement
-                        ? manhattanMicron(model, placed_cell.original, placed_cell.placed)
-                        : 0.0;
-    double after = manhattanMicron(model, placed_cell.original, entry.second);
-    movement_delta += after - before;
-    if (placed_cell.has_placement) {
-      disturbance += manhattanMicron(model, placed_cell.placed, entry.second);
+std::vector<size_t> makeOrder(const PlacementModel& model, int variant, double alpha,
+                              double threshold) {
+    (void)threshold;
+    std::vector<size_t> order = model.cell_ids;
+    if (variant == 0) {
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const auto& ia = model.instances[a];
+            const auto& ib = model.instances[b];
+            if (ia.original.x0 != ib.original.x0) return ia.original.x0 < ib.original.x0;
+            if (ia.original.y0 != ib.original.y0) return ia.original.y0 < ib.original.y0;
+            return ia.input_order < ib.input_order;
+        });
+    } else if (variant == 1) {
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const auto& ia = model.instances[a];
+            const auto& ib = model.instances[b];
+            if (ia.original.x0 != ib.original.x0) return ia.original.x0 > ib.original.x0;
+            if (ia.original.y0 != ib.original.y0) return ia.original.y0 < ib.original.y0;
+            return ia.input_order < ib.input_order;
+        });
+    } else if (variant == 2 && alpha < 0.85) {
+        const int64_t grid = 10 * model.dbu_per_micron;
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const auto& ia = model.instances[a];
+            const auto& ib = model.instances[b];
+            const int64_t ba = ((ia.original.x0 - model.die.x0) / grid) +
+                               131 * ((ia.original.y0 - model.die.y0) / grid);
+            const int64_t bb = ((ib.original.x0 - model.die.x0) / grid) +
+                               131 * ((ib.original.y0 - model.die.y0) / grid);
+            if (ba != bb) return ba < bb;
+            const int64_t aa = model.width(ia) * model.height(ia);
+            const int64_t ab = model.width(ib) * model.height(ib);
+            if (aa != ab) return aa > ab;
+            return ia.input_order < ib.input_order;
+        });
+    } else {
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const auto& ia = model.instances[a];
+            const auto& ib = model.instances[b];
+            const int64_t aa = model.width(ia) * model.height(ia);
+            const int64_t ab = model.width(ib) * model.height(ib);
+            if (aa != ab) return aa > ab;
+            if (ia.original.x0 != ib.original.x0) return ia.original.x0 < ib.original.x0;
+            return ia.input_order < ib.input_order;
+        });
     }
-    if (entry.first == cell_id) {
-      candidate_rect = entry.second;
-    }
-  }
-
-  double density_penalty = density.trialPenalty(candidate_rect, options.threshold);
-  double row_distance = std::abs(candidate_rect.lly - cell.original.lly) /
-                        static_cast<double>(model.dbu_per_micron);
-  double movement_cost = options.norm_factor * (movement_delta + 0.01 * disturbance +
-                                                0.05 * row_distance);
-  trial.score = options.alpha * movement_cost +
-                (1.0 - options.alpha) * density_penalty;
-  trial.feasible = true;
-  return trial;
+    return order;
 }
 
-void commitTrial(PlacementModel *model, std::vector<IntervalState> *states, DensityGrid *density,
-                 const TrialPlacement &trial) {
-  IntervalState &state = (*states)[static_cast<std::size_t>(trial.state_index)];
-  state.cells.clear();
-  for (const auto &entry : trial.placements) {
-    Cell &cell = model->cells[static_cast<std::size_t>(entry.first)];
-    if (cell.has_placement) {
-      density->addRect(cell.placed, -1.0);
-    }
-    cell.placed = entry.second;
-    cell.has_placement = true;
-    density->addRect(cell.placed, 1.0);
-    state.cells.push_back(entry.first);
-  }
-}
-
-std::vector<IntervalState> makeStates(const std::vector<SiteRow> &rows) {
-  std::vector<IntervalState> states;
-  for (std::size_t r = 0; r < rows.size(); ++r) {
-    for (std::size_t i = 0; i < rows[r].intervals.size(); ++i) {
-      IntervalState state;
-      state.row_index = static_cast<int>(r);
-      state.interval_index = static_cast<int>(i);
-      state.interval = rows[r].intervals[i];
-      states.push_back(state);
-    }
-  }
-  return states;
-}
-
-std::vector<std::vector<int>> statesByRow(const std::vector<IntervalState> &states,
-                                          std::size_t row_count) {
-  std::vector<std::vector<int>> by_row(row_count);
-  for (std::size_t i = 0; i < states.size(); ++i) {
-    by_row[static_cast<std::size_t>(states[i].row_index)].push_back(static_cast<int>(i));
-  }
-  return by_row;
-}
-
-std::vector<int> nearbyCandidateStates(const PlacementModel &model, const std::vector<SiteRow> &rows,
-                                       const std::vector<std::vector<int>> &by_row,
-                                       const Cell &cell) {
-  std::vector<int> candidates;
-  if (rows.empty()) {
-    return candidates;
-  }
-  Coord raw_row = (cell.original.lly - model.die.lly) / model.site_height;
-  int origin_row = static_cast<int>(std::max<Coord>(0, std::min<Coord>(
-      static_cast<Coord>(rows.size() - 1), raw_row)));
-  const int max_radius = std::min<int>(static_cast<int>(rows.size()) - 1, 25);
-  for (int radius = 0; radius <= max_radius; ++radius) {
-    int lo = origin_row - radius;
-    int hi = origin_row + radius;
-    if (lo >= 0) {
-      candidates.insert(candidates.end(), by_row[static_cast<std::size_t>(lo)].begin(),
-                        by_row[static_cast<std::size_t>(lo)].end());
-    }
-    if (radius != 0 && hi < static_cast<int>(rows.size())) {
-      candidates.insert(candidates.end(), by_row[static_cast<std::size_t>(hi)].begin(),
-                        by_row[static_cast<std::size_t>(hi)].end());
-    }
-  }
-  return candidates;
-}
-
-LegalizeResult legalizeOnePass(const PlacementModel &input, const std::vector<SiteRow> &rows,
-                               const LegalizeOptions &options, bool reverse) {
-  LegalizeResult result;
-  result.model = input;
-  for (Cell &cell : result.model.cells) {
-    cell.has_placement = false;
-    cell.placed = cell.original;
-  }
-
-  for (const Cell &cell : result.model.cells) {
-    if (!isSingleRowCell(result.model, cell)) {
-      result.error = "unsupported multi-row movable cell '" + cell.name + "' height " +
-                     std::to_string(height(cell.original)) + " site height " +
-                     std::to_string(result.model.site_height);
-      return result;
-    }
-  }
-
-  std::vector<IntervalState> states = makeStates(rows);
-  if (states.empty()) {
-    result.error = "no legal row intervals are available";
-    return result;
-  }
-  std::vector<std::vector<int>> by_row = statesByRow(states, rows.size());
-
-  DensityGrid density(result.model);
-  for (int cell_id : cellOrder(result.model, reverse)) {
-    TrialPlacement best;
-    const Cell &cell = result.model.cells[static_cast<std::size_t>(cell_id)];
-    std::vector<int> candidates = nearbyCandidateStates(result.model, rows, by_row, cell);
-    for (int state_index : candidates) {
-      TrialPlacement trial =
-          makeTrial(result.model, rows, states, density, options, cell_id,
-                    state_index);
-      if (!trial.feasible) {
-        continue;
-      }
-      if (!best.feasible || trial.score < best.score ||
-          (trial.score == best.score && trial.state_index < best.state_index)) {
-        best = std::move(trial);
-      }
-    }
-    if (!best.feasible) {
-      for (std::size_t state_index = 0; state_index < states.size(); ++state_index) {
-        TrialPlacement trial =
-            makeTrial(result.model, rows, states, density, options, cell_id,
-                      static_cast<int>(state_index));
-        if (!trial.feasible) {
-          continue;
+bool runPass(const PlacementModel& model, const std::vector<RowInterval>& intervals, int variant,
+             double alpha, double threshold, PassState* state, std::string* error) {
+    state->placements.assign(model.instances.size(), Point{0, 0});
+    state->placed.assign(model.instances.size(), false);
+    state->assigned.assign(intervals.size(), {});
+    state->cell_interval.assign(model.instances.size(), -1);
+    state->used_width.assign(intervals.size(), 0);
+    const std::vector<size_t> order = makeOrder(model, variant, alpha, threshold);
+    for (size_t id : order) {
+        if (!insertCell(model, intervals, id, alpha, threshold, state, error)) {
+            return false;
         }
-        if (!best.feasible || trial.score < best.score ||
-            (trial.score == best.score && trial.state_index < best.state_index)) {
-          best = std::move(trial);
-        }
-      }
     }
-    if (!best.feasible) {
-      result.error = "no legal interval can fit cell '" + cell.name + "' width " +
-                     std::to_string(width(cell.original));
-      return result;
-    }
-    commitTrial(&result.model, &states, &density, best);
-  }
-
-  ValidationResult validation = validatePlacement(result.model, rows, options);
-  if (!validation.ok) {
-    result.error = validation.error;
-    return result;
-  }
-  result.ok = true;
-  result.average_displacement = validation.average_displacement;
-  result.dor = validation.dor;
-  result.quality = validation.quality;
-  return result;
+    return true;
 }
 
-bool rectInsideInterval(const Rect &rect, const SiteRow &row) {
-  if (rect.lly != row.y) {
-    return false;
-  }
-  for (const RowInterval &interval : row.intervals) {
-    if (interval.llx <= rect.llx && rect.urx <= interval.urx) {
-      return true;
+void repair(const PlacementModel& model, const std::vector<RowInterval>& intervals, double alpha,
+            double threshold, PassState* state) {
+    ValidationResult current = validatePlacement(model, state->placements, intervals, alpha, threshold);
+    if (!current.ok) {
+        return;
     }
-  }
-  return false;
+    for (int pass = 0; pass < kRepairPasses; ++pass) {
+        std::vector<size_t> cells = model.cell_ids;
+        std::sort(cells.begin(), cells.end(), [&](size_t a, size_t b) {
+            const int64_t da = manhattan(originalPoint(model, a), state->placements[a]);
+            const int64_t db = manhattan(originalPoint(model, b), state->placements[b]);
+            if (da != db) return da > db;
+            return model.instances[a].input_order < model.instances[b].input_order;
+        });
+        bool improved = false;
+        const size_t limit = std::min<size_t>(kRepairCells, cells.size());
+        for (size_t idx = 0; idx < limit; ++idx) {
+            const size_t cell_id = cells[idx];
+            const int old_interval = state->cell_interval[cell_id];
+            if (old_interval < 0) {
+                continue;
+            }
+            PassState trial = *state;
+            auto& old_cells = trial.assigned[old_interval];
+            old_cells.erase(std::remove(old_cells.begin(), old_cells.end(), cell_id), old_cells.end());
+            trial.used_width[old_interval] -= model.width(model.instances[cell_id]);
+            trial.placed[cell_id] = false;
+            trial.cell_interval[cell_id] = -1;
+            if (!old_cells.empty()) {
+                std::vector<Point> solved_old = solveRowInterval(model, intervals[old_interval], old_cells);
+                applySolvedRow(model, old_interval, intervals, solved_old, &trial);
+            }
+            std::string err;
+            if (!insertCell(model, intervals, cell_id, alpha, threshold, &trial, &err)) {
+                continue;
+            }
+            ValidationResult candidate =
+                validatePlacement(model, trial.placements, intervals, alpha, threshold);
+            if (!candidate.ok) {
+                continue;
+            }
+            const bool accept_quality = candidate.metrics.flow_quality + 1e-9 < current.metrics.flow_quality;
+            const bool accept_dor = alpha < 0.35 &&
+                                    candidate.metrics.dor_percent + 1e-9 < current.metrics.dor_percent &&
+                                    candidate.metrics.normalized_displacement <=
+                                        current.metrics.normalized_displacement + 1.0;
+            if (accept_quality || accept_dor) {
+                *state = std::move(trial);
+                current = candidate;
+                improved = true;
+            }
+        }
+        if (!improved) {
+            break;
+        }
+    }
 }
 
 }  // namespace
 
-std::vector<int> cellOrder(const PlacementModel &model, bool reverse) {
-  std::vector<int> order;
-  order.reserve(model.cells.size());
-  for (std::size_t i = 0; i < model.cells.size(); ++i) {
-    order.push_back(static_cast<int>(i));
-  }
-  std::sort(order.begin(), order.end(), [&](int a, int b) {
-    const Cell &ca = model.cells[static_cast<std::size_t>(a)];
-    const Cell &cb = model.cells[static_cast<std::size_t>(b)];
-    if (ca.original.llx != cb.original.llx) {
-      return reverse ? ca.original.llx > cb.original.llx : ca.original.llx < cb.original.llx;
+std::vector<Point> solveRowInterval(const PlacementModel& model, const RowInterval& interval,
+                                    const std::vector<size_t>& cell_ids) {
+    std::vector<size_t> ids = cell_ids;
+    std::sort(ids.begin(), ids.end(), [&](size_t a, size_t b) {
+        const auto& ia = model.instances[a];
+        const auto& ib = model.instances[b];
+        if (ia.original.x0 != ib.original.x0) return ia.original.x0 < ib.original.x0;
+        return ia.input_order < ib.input_order;
+    });
+    int64_t total_width = 0;
+    for (size_t id : ids) {
+        total_width += model.width(model.instances[id]);
     }
-    if (ca.original.lly != cb.original.lly) {
-      return ca.original.lly < cb.original.lly;
+    if (total_width > interval.x1 - interval.x0) {
+        throw PlacementError("row interval trial exceeds interval capacity");
     }
-    if (ca.name != cb.name) {
-      return ca.name < cb.name;
+
+    std::vector<Cluster> clusters;
+    for (size_t id : ids) {
+        Cluster c;
+        c.ids.push_back(id);
+        c.width = model.width(model.instances[id]);
+        c.weight = 1;
+        c.q = static_cast<long double>(model.instances[id].original.x0);
+        collapseCluster(model, interval, &c);
+        clusters.push_back(c);
+        while (clusters.size() >= 2) {
+            Cluster& prev = clusters[clusters.size() - 2];
+            Cluster& cur = clusters[clusters.size() - 1];
+            if (prev.x + prev.width <= cur.x) {
+                break;
+            }
+            Cluster merged = mergeClusters(interval, model, prev, cur);
+            clusters.pop_back();
+            clusters.pop_back();
+            clusters.push_back(std::move(merged));
+        }
     }
-    return ca.input_index < cb.input_index;
-  });
-  return order;
+
+    std::vector<Point> placements(model.instances.size(), Point{0, 0});
+    for (const Cluster& cluster : clusters) {
+        int64_t x = cluster.x;
+        for (size_t id : cluster.ids) {
+            placements[id] = Point{x, interval.y};
+            x += model.width(model.instances[id]);
+        }
+    }
+    return placements;
 }
 
-double averageDisplacementMicron(const PlacementModel &model) {
-  if (model.cells.empty()) {
-    return 0.0;
-  }
-  double total = 0.0;
-  for (const Cell &cell : model.cells) {
-    total += manhattanMicron(model, cell.original, cell.placed);
-  }
-  return total / static_cast<double>(model.cells.size());
-}
+LegalizationResult legalize(const PlacementModel& model, const std::vector<RowInterval>& intervals,
+                            double alpha, double threshold) {
+    if (model.cell_ids.empty()) {
+        return LegalizationResult{std::vector<Point>(model.instances.size(), Point{0, 0}), Metrics{}};
+    }
+    if (intervals.empty()) {
+        throw PlacementError("cannot legalize without legal row intervals");
+    }
 
-ValidationResult validatePlacement(const PlacementModel &model, const std::vector<SiteRow> &rows,
-                                   const LegalizeOptions &options) {
-  ValidationResult result;
-  std::set<std::pair<Coord, Coord>> seen;
-  for (std::size_t i = 0; i < model.cells.size(); ++i) {
-    const Cell &cell = model.cells[i];
-    if (!cell.has_placement) {
-      result.error = "cell '" + cell.name + "' has no placement";
-      return result;
+    bool have_best = false;
+    LegalizationResult best;
+    std::string last_error;
+    for (int variant = 0; variant < 4; ++variant) {
+        PassState state;
+        std::string error;
+        if (!runPass(model, intervals, variant, alpha, threshold, &state, &error)) {
+            last_error = error;
+            continue;
+        }
+        repair(model, intervals, alpha, threshold, &state);
+        ValidationResult valid =
+            validatePlacement(model, state.placements, intervals, alpha, threshold);
+        if (!valid.ok) {
+            std::ostringstream oss;
+            oss << "variant " << variant << " failed validation: ";
+            for (size_t i = 0; i < valid.errors.size() && i < 3; ++i) {
+                if (i) oss << "; ";
+                oss << valid.errors[i];
+            }
+            last_error = oss.str();
+            continue;
+        }
+        if (!have_best || valid.metrics.flow_quality < best.metrics.flow_quality) {
+            have_best = true;
+            best.placements = std::move(state.placements);
+            best.metrics = valid.metrics;
+        }
     }
-    if (!contains(model.die, cell.placed)) {
-      result.error = "cell '" + cell.name + "' is outside the die";
-      return result;
+    if (!have_best) {
+        throw PlacementError(last_error.empty() ? "legalization failed" : last_error);
     }
-    if (!isSiteAlignedX(model, cell.placed.llx)) {
-      result.error = "cell '" + cell.name + "' is not site-column aligned";
-      return result;
-    }
-    if (!isRowAlignedY(model, cell.placed.lly)) {
-      result.error = "cell '" + cell.name + "' is not row aligned";
-      return result;
-    }
-    bool in_row_interval = false;
-    for (const SiteRow &row : rows) {
-      if (rectInsideInterval(cell.placed, row)) {
-        in_row_interval = true;
-        break;
-      }
-    }
-    if (!in_row_interval) {
-      result.error = "cell '" + cell.name + "' is not inside a legal row interval";
-      return result;
-    }
-    for (const Obstacle &obstacle : model.obstacles) {
-      if (overlaps(cell.placed, obstacle.rect)) {
-        result.error = "cell '" + cell.name + "' overlaps obstacle '" + obstacle.name + "'";
-        return result;
-      }
-    }
-    for (std::size_t j = 0; j < i; ++j) {
-      if (overlaps(cell.placed, model.cells[j].placed)) {
-        result.error = "cell '" + cell.name + "' overlaps cell '" + model.cells[j].name + "'";
-        return result;
-      }
-    }
-  }
-
-  DensityResult density = computeFinalDensity(model, options.threshold);
-  result.average_displacement = averageDisplacementMicron(model);
-  result.dor = density.dor;
-  result.quality = options.alpha * (result.average_displacement * options.norm_factor) +
-                   (1.0 - options.alpha) * result.dor;
-  result.ok = true;
-  return result;
-}
-
-LegalizeResult legalizePlacement(const PlacementModel &model, const std::vector<SiteRow> &rows,
-                                 const LegalizeOptions &options) {
-  LegalizeResult forward = legalizeOnePass(model, rows, options, false);
-  LegalizeResult reverse = legalizeOnePass(model, rows, options, true);
-  if (forward.ok && reverse.ok) {
-    return reverse.quality < forward.quality ? reverse : forward;
-  }
-  if (forward.ok) {
-    return forward;
-  }
-  if (reverse.ok) {
-    return reverse;
-  }
-  LegalizeResult failed;
-  failed.error = !forward.error.empty() ? forward.error : reverse.error;
-  return failed;
+    return best;
 }
 
 }  // namespace legalizer
