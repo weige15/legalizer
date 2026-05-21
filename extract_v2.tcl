@@ -26,7 +26,7 @@ if {[llength $rows] > 0} {
 }
 
 puts $fp ""
-puts $fp "Name LLX LLY Width Height Type"
+puts $fp "Name LLX LLY Width Height Orient Type"
 
 # 3. Instances
 set insts [$block getInsts]
@@ -43,6 +43,9 @@ foreach inst $insts {
     set w  [expr int([$bbox xMax] - $x1)]
     set h  [expr int([$bbox yMax] - $y1)]
 
+    # Orientation
+    set orient [$inst getOrient]
+
     # Cell or Macro
     set master [$inst getMaster]
     set m_type [$master getType]
@@ -53,7 +56,7 @@ foreach inst $insts {
         set cat "CELL"
     }
 
-    puts $fp "$name $x1 $y1 $w $h $cat"
+    puts $fp "$name $x1 $y1 $w $h $orient $cat"
 }
 
 # 4. Blockages
