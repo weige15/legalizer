@@ -108,7 +108,10 @@ if {[string first "detailed_placement" $legalizer_text] >= 0} {
     error "Refusing to source output TCL because it contains detailed_placement"
 }
 if {[catch {source $legalizer_tcl} source_result]} {
-    error "Failed tproc rect_overlap_area {ax0 ay0 ax1 ay1 bx0 by0 bx1 by1} {
+    error "Failed to source Legalizer output TCL:\n$source_result"
+}
+
+proc rect_overlap_area {ax0 ay0 ax1 ay1 bx0 by0 bx1 by1} {
     set x0 [expr {max($ax0, $bx0)}]
     set y0 [expr {max($ay0, $by0)}]
     set x1 [expr {min($ax1, $bx1)}]
@@ -220,13 +223,14 @@ puts "Done. Removed $count macro."
 # Dump density csv, 10u grid
 # DO NOT change the name
 set heat_name [file join $caseName "${design_name}_heat.csv"]
-if {[catch {gui::dump_heatmap "Placement" "$heat_name"} heat_rwrite_fallback_density_csv $block $heat_name
-{
+if {[catch {gui::dump_heatmap "Placement" "$heat_name"} heat_result]} {
+    puts "gui::dump_heatmap failed: $heat_result"
+    puts "Falling back to Tcl density CSV writer."
+    write_fallback_density_csv $block $heat_name
+}
+if {![file exists $heat_name] || [file size $heat_name] == 0} {
     error "Density CSV was not created: $heat_name"
 }
-e
-set heat_name [file join $caseName "${design_name}_heat.csv"]
-gui::dump_heatmap "Placement" "$heat_name"
 puts "Done: $heat_name generated."
 
 
@@ -274,5 +278,5 @@ puts "Total displacement     : [format "%.1f" $total_u] u"
 puts "Average displacement   : [format "%.1f" $avg_u] u"
 puts "Max displacement       : [format "%.1f" $max_u] u"
 puts "Threshold              : $threshold"
-ORE    : [format "%.4f" $quality_score]"
+puts "Quality Score          : [format "%.4f" $quality_score]"
 puts "----------------------------------------"
