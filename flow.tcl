@@ -24,7 +24,7 @@ if {[llength $requested_cases] > 1} {
         puts "Running case: $one_case"
         puts "========================================"
         set ::env(CASE_NAME) $one_case
-        if {[catch {exec $runner -exit [info script] 2>@1} child_result]} {
+        if {[catch {exec $runner [info script] 2>@1} child_result]} {
             puts $child_result
             error "Case failed: $one_case"
         }
