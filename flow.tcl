@@ -1,7 +1,7 @@
 # 0. Case selection
 # By default, run both public benchmarks in isolated OpenROAD child processes.
 # Override with CASE_NAME for one case, or CASES for a Tcl list of cases.
-set default_cases {public/ispd19_sample}
+set default_cases {public/ispd15_mgc_matrix_mult_a public/ispd19_sample}
 if {[info exists ::env(CASES)] && $::env(CASES) ne ""} {
     set requested_cases $::env(CASES)
 } elseif {[info exists ::env(CASE_NAME)] && $::env(CASE_NAME) ne ""} {
@@ -108,10 +108,7 @@ if {[string first "detailed_placement" $legalizer_text] >= 0} {
     error "Refusing to source output TCL because it contains detailed_placement"
 }
 if {[catch {source $legalizer_tcl} source_result]} {
-    error "Failed to source Legalizer output $legalizer_tcl:\n$source_result"
-}
-
-proc rect_overlap_area {ax0 ay0 ax1 ay1 bx0 by0 bx1 by1} {
+    error "Failed tproc rect_overlap_area {ax0 ay0 ax1 ay1 bx0 by0 bx1 by1} {
     set x0 [expr {max($ax0, $bx0)}]
     set y0 [expr {max($ay0, $by0)}]
     set x1 [expr {min($ax1, $bx1)}]
@@ -120,16 +117,6 @@ proc rect_overlap_area {ax0 ay0 ax1 ay1 bx0 by0 bx1 by1} {
         return 0
     }
     return [expr {($x1 - $x0) * ($y1 - $y0)}]
-}
-
-proc clamp_index {value limit} {
-    if {$value < 0} {
-        return 0
-    }
-    if {$value >= $limit} {
-        return [expr {$limit - 1}]
-    }
-    return $value
 }
 
 proc write_fallback_density_csv {block heat_name} {
@@ -143,52 +130,6 @@ proc write_fallback_density_csv {block heat_name} {
     set cols [expr {int(ceil(($die_x1 - $die_x0) / double($grid_size)))}]
     set rows [expr {int(ceil(($die_y1 - $die_y0) / double($grid_size)))}]
 
-    array set movable_area {}
-    array set covered_by_macro {}
-
-    foreach inst [$block getInsts] {
-        set bbox [$inst getBBox]
-        if {$bbox eq "" || $bbox eq "NULL"} {
-            continue
-        }
-        set ix0 [expr {int([$bbox xMin])}]
-        set iy0 [expr {int([$bbox yMin])}]
-        set ix1 [expr {int([$bbox xMax])}]
-        set iy1 [expr {int([$bbox yMax])}]
-        if {$ix0 >= $die_x1 || $ix1 <= $die_x0 || $iy0 >= $die_y1 || $iy1 <= $die_y0} {
-            continue
-        }
-
-        set gx0 [clamp_index [expr {int((max($ix0, $die_x0) - $die_x0) / $grid_size)}] $cols]
-        set gy0 [clamp_index [expr {int((max($iy0, $die_y0) - $die_y0) / $grid_size)}] $rows]
-        set gx1 [clamp_index [expr {int((min($ix1, $die_x1) - $die_x0 - 1) / $grid_size)}] $cols]
-        set gy1 [clamp_index [expr {int((min($iy1, $die_y1) - $die_y0 - 1) / $grid_size)}] $rows]
-
-        set master [$inst getMaster]
-        set m_type [$master getType]
-        for {set gy $gy0} {$gy <= $gy1} {incr gy} {
-            set by0 [expr {$die_y0 + $gy * $grid_size}]
-            set by1 [expr {min($die_y1, $by0 + $grid_size)}]
-            for {set gx $gx0} {$gx <= $gx1} {incr gx} {
-                set bx0 [expr {$die_x0 + $gx * $grid_size}]
-                set bx1 [expr {min($die_x1, $bx0 + $grid_size)}]
-                set overlap [rect_overlap_area $bx0 $by0 $bx1 $by1 $ix0 $iy0 $ix1 $iy1]
-                if {$overlap == 0} {
-                    continue
-                }
-                set key "$gx,$gy"
-                if {$m_type eq "BLOCK"} {
-                    set covered_by_macro($key) 1
-                } else {
-                    if {![info exists movable_area($key)]} {
-                        set movable_area($key) 0
-                    }
-                    set movable_area($key) [expr {$movable_area($key) + $overlap}]
-                }
-            }
-        }
-    }
-
     set fp [open $heat_name w]
     puts $fp "x,y,width,height,density"
     for {set gy 0} {$gy < $rows} {incr gy} {
@@ -201,15 +142,34 @@ proc write_fallback_density_csv {block heat_name} {
             if {$grid_area <= 0.0} {
                 continue
             }
-            set key "$gx,$gy"
-            if {[info exists covered_by_macro($key)]} {
+
+            set covered_by_macro 0
+            set movable_area 0
+            foreach inst [$block getInsts] {
+                set bbox [$inst getBBox]
+                if {$bbox eq "" || $bbox eq "NULL"} {
+                    continue
+                }
+                set ix0 [expr {int([$bbox xMin])}]
+                set iy0 [expr {int([$bbox yMin])}]
+                set ix1 [expr {int([$bbox xMax])}]
+                set iy1 [expr {int([$bbox yMax])}]
+                set overlap [rect_overlap_area $gx0 $gy0 $gx1 $gy1 $ix0 $iy0 $ix1 $iy1]
+                if {$overlap == 0} {
+                    continue
+                }
+                set master [$inst getMaster]
+                set m_type [$master getType]
+                if {$m_type eq "BLOCK"} {
+                    set covered_by_macro 1
+                    break
+                }
+                set movable_area [expr {$movable_area + $overlap}]
+            }
+            if {$covered_by_macro} {
                 continue
             }
-            set area 0
-            if {[info exists movable_area($key)]} {
-                set area $movable_area($key)
-            }
-            set density [expr {($area / $grid_area) * 100.0}]
+            set density [expr {($movable_area / $grid_area) * 100.0}]
             puts $fp "$gx0,$gy0,[expr {$gx1 - $gx0}],[expr {$gy1 - $gy0}],$density"
         }
     }
@@ -260,11 +220,15 @@ puts "Done. Removed $count macro."
 # Dump density csv, 10u grid
 # DO NOT change the name
 set heat_name [file join $caseName "${design_name}_heat.csv"]
-write_fallback_density_csv $block $heat_name
-if {![file exists $heat_name] || [file size $heat_name] == 0} {
+if {[catch {gui::dump_heatmap "Placement" "$heat_name"} heat_rwrite_fallback_density_csv $block $heat_name
+{
     error "Density CSV was not created: $heat_name"
 }
+e
+set heat_name [file join $caseName "${design_name}_heat.csv"]
+gui::dump_heatmap "Placement" "$heat_name"
 puts "Done: $heat_name generated."
+
 
 # 7. Calculate DOR (0-100)
 set total_grids 0
@@ -310,10 +274,7 @@ puts "Total displacement     : [format "%.1f" $total_u] u"
 puts "Average displacement   : [format "%.1f" $avg_u] u"
 puts "Max displacement       : [format "%.1f" $max_u] u"
 puts "Threshold              : $threshold"
-puts "Total Grids            : $total_grids"
-puts "Overflow Grids         : $overflow_grids"
-puts "DOR (Density Overflow) : [format "%.2f" $dor] %"
-puts "Norm. Displacement     : [format "%.2f" $norm_disp]"
+isplacement     : [format "%.2f" $norm_disp]"
 puts "----------------------------------------"
 puts "FINAL QUALITY SCORE    : [format "%.4f" $quality_score]"
 puts "----------------------------------------"
