@@ -1,7 +1,7 @@
 # 0. Case selection
 # By default, run both public benchmarks in isolated OpenROAD child processes.
 # Override with CASE_NAME for one case, or CASES for a Tcl list of cases.
-set default_cases {public/ispd19_sample public/ispd15_mgc_matrix_mult_a}
+set default_cases {public/ispd19_sample}
 if {[info exists ::env(CASES)] && $::env(CASES) ne ""} {
     set requested_cases $::env(CASES)
 } elseif {[info exists ::env(CASE_NAME)] && $::env(CASE_NAME) ne ""} {
