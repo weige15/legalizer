@@ -235,6 +235,11 @@ proc run_child {repo_root} {
     set chip [$db getChip]
     set block [$chip getBlock]
     set design_name [$block getName]
+    set ::caseName $caseName
+    set ::db $db
+    set ::chip $chip
+    set ::block $block
+    set ::design_name $design_name
 
     if {[flow_run_gp]} {
         puts "Running global_placement -density 0.95"
