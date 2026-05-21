@@ -49,6 +49,7 @@ proc flow_run_gp {} {
 }
 
 proc run_parent {repo_root script_path} {
+    set single_case [expr {![info exists ::env(CASES)] && [info exists ::env(CASE_NAME)]}]
     if {[info exists ::env(CASES)]} {
         set cases $::env(CASES)
     } elseif {[info exists ::env(CASE_NAME)]} {
@@ -60,6 +61,16 @@ proc run_parent {repo_root script_path} {
     puts "Building Legalizer"
     if {[catch {exec make -C $repo_root >@ stdout 2>@ stderr} result]} {
         flow_fail "make failed: $result"
+    }
+
+    if {$single_case} {
+        set ::env(CASE_NAME) [normalize_case_path $repo_root $::env(CASE_NAME)]
+        puts ""
+        puts "============================================================"
+        puts "Running public case: $::env(CASE_NAME)"
+        puts "============================================================"
+        run_child $repo_root
+        return
     }
 
     set openroad_bin [info nameofexecutable]
