@@ -188,7 +188,7 @@ void testMetricsAndWriter() {
   model.tech.die = Rect{0, 0, 20, 10};
   model.tech.siteWidth = 1;
   model.tech.siteHeight = 10;
-  model.cells.push_back(makeCell("a", Point{0, 0}, 10, 10, "MX", true, Point{0, 0}));
+  model.cells.push_back(makeCell("a[0]", Point{0, 0}, 10, 10, "MX", true, Point{0, 0}));
   Metrics metrics = evaluateMetrics(model, 0.5, 100.0);
   expectEq(metrics.totalGrids, 2, "grid count");
   expectEq(metrics.overflowGrids, 0, "threshold equality is not overflow");
@@ -199,7 +199,7 @@ void testMetricsAndWriter() {
   Status status = writeTcl(model, "tests/out_writer.tcl");
   expectTrue(status.ok, status.message);
   std::string text = readFile("tests/out_writer.tcl");
-  expectTrue(text.find("place_cell -inst_name a -orient MX -origin {0.000000 0.000000}") !=
+  expectTrue(text.find("place_cell -inst_name {a[0]} -orient {MX} -origin {0.000000 0.000000}") !=
                  std::string::npos,
              "writer command format");
   expectTrue(text.find("detailed_placement") == std::string::npos,

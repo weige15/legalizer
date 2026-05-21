@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
+#include <string>
 
 namespace legalizer {
 namespace {
@@ -16,6 +17,20 @@ std::string tempPathFor(const std::string &outputPath) {
     base = outputPath.substr(slash + 1);
   }
   return dir + "." + base + ".tmp";
+}
+
+std::string tclBraceWord(const std::string &text) {
+  std::string quoted;
+  quoted.reserve(text.size() + 2);
+  quoted.push_back('{');
+  for (char ch : text) {
+    if (ch == '\\' || ch == '{' || ch == '}') {
+      quoted.push_back('\\');
+    }
+    quoted.push_back(ch);
+  }
+  quoted.push_back('}');
+  return quoted;
 }
 
 }  // namespace
@@ -32,8 +47,9 @@ Status writeTcl(const PlacementModel &model, const std::string &outputPath) {
       if (!cell.placedValid) {
         continue;
       }
-      out << "place_cell -inst_name " << cell.name << " -orient " << cell.orient
-          << " -origin {" << dbuToMicron(model.tech, cell.placed.x) << " "
+      out << "place_cell -inst_name " << tclBraceWord(cell.name) << " -orient "
+          << tclBraceWord(cell.orient) << " -origin {"
+          << dbuToMicron(model.tech, cell.placed.x) << " "
           << dbuToMicron(model.tech, cell.placed.y) << "}\n";
     }
     out.flush();
