@@ -45,3 +45,8 @@ generated/
 .codex/
 
 !tests/*.gp
+!*_heat.csv
+!*_insts.tcl
+!*_legalized.tcl
+
+
