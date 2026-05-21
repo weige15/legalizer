@@ -248,6 +248,99 @@ bool runPass(const PlacementModel& model, const std::vector<RowInterval>& interv
     return true;
 }
 
+int nearestRowForCell(const PlacementModel& model, size_t cell_id) {
+    int row = model.rowIndexForY(model.instances[cell_id].original.y0);
+    if (row >= 0) {
+        return row;
+    }
+    const int64_t rel = model.instances[cell_id].original.y0 - model.die.y0;
+    row = static_cast<int>((rel + model.site_height / 2) / model.site_height);
+    return std::max(0, std::min(model.rowCount() - 1, row));
+}
+
+bool runScalablePass(const PlacementModel& model, const std::vector<RowInterval>& intervals, int variant,
+                     double alpha, double threshold, PassState* state, std::string* error) {
+    (void)threshold;
+    state->placements.assign(model.instances.size(), Point{0, 0});
+    state->placed.assign(model.instances.size(), false);
+    state->assigned.assign(intervals.size(), {});
+    state->cell_interval.assign(model.instances.size(), -1);
+    state->used_width.assign(intervals.size(), 0);
+
+    std::vector<std::vector<int>> intervals_by_row(static_cast<size_t>(model.rowCount()));
+    for (size_t i = 0; i < intervals.size(); ++i) {
+        intervals_by_row[intervals[i].row_index].push_back(static_cast<int>(i));
+    }
+
+    const std::vector<size_t> order = makeOrder(model, variant, alpha, threshold);
+    for (size_t cell_id : order) {
+        const int64_t w = model.width(model.instances[cell_id]);
+        const int target_row = nearestRowForCell(model, cell_id);
+        const int64_t target_x = model.instances[cell_id].original.x0;
+        int best_interval = -1;
+        double best_score = std::numeric_limits<double>::infinity();
+
+        for (int dist = 0; dist < model.rowCount(); ++dist) {
+            bool saw_fit_at_distance = false;
+            for (int sign : {-1, 1}) {
+                if (dist == 0 && sign == 1) {
+                    continue;
+                }
+                const int row = target_row + sign * dist;
+                if (row < 0 || row >= model.rowCount()) {
+                    continue;
+                }
+                for (int interval_id : intervals_by_row[static_cast<size_t>(row)]) {
+                    const RowInterval& interval = intervals[interval_id];
+                    const int64_t capacity = interval.x1 - interval.x0;
+                    if (state->used_width[interval_id] + w > capacity) {
+                        continue;
+                    }
+                    saw_fit_at_distance = true;
+                    const int64_t x_dist =
+                        target_x < interval.x0
+                            ? interval.x0 - target_x
+                            : (target_x + w > interval.x1 ? target_x + w - interval.x1 : 0);
+                    const double y_um = std::abs(interval.row_index - target_row) *
+                                        model.dbuToMicron(model.site_height);
+                    const double x_um = model.dbuToMicron(x_dist);
+                    const double load_after =
+                        static_cast<double>(state->used_width[interval_id] + w) /
+                        static_cast<double>(capacity);
+                    const double density_bias = (1.0 - alpha) * load_after * load_after * 20.0;
+                    const double score = alpha * (x_um + y_um) + density_bias +
+                                         static_cast<double>(interval_id) * 1e-12;
+                    if (score < best_score) {
+                        best_score = score;
+                        best_interval = interval_id;
+                    }
+                }
+            }
+            if (saw_fit_at_distance && (dist >= kInitialRowWindow || best_interval >= 0)) {
+                break;
+            }
+        }
+
+        if (best_interval < 0) {
+            *error = "no feasible legal interval for " + model.instances[cell_id].name;
+            return false;
+        }
+        state->assigned[best_interval].push_back(cell_id);
+        state->used_width[best_interval] += w;
+        state->cell_interval[cell_id] = best_interval;
+    }
+
+    for (size_t interval_id = 0; interval_id < intervals.size(); ++interval_id) {
+        if (state->assigned[interval_id].empty()) {
+            continue;
+        }
+        std::vector<Point> solved =
+            solveRowInterval(model, intervals[interval_id], state->assigned[interval_id]);
+        applySolvedRow(model, static_cast<int>(interval_id), intervals, solved, state);
+    }
+    return true;
+}
+
 void repair(const PlacementModel& model, const std::vector<RowInterval>& intervals, double alpha,
             double threshold, PassState* state) {
     ValidationResult current = validatePlacement(model, state->placements, intervals, alpha, threshold);
@@ -373,11 +466,19 @@ LegalizationResult legalize(const PlacementModel& model, const std::vector<RowIn
     for (int variant = 0; variant < 4; ++variant) {
         PassState state;
         std::string error;
-        if (!runPass(model, intervals, variant, alpha, threshold, &state, &error)) {
+        const bool large_case = model.cell_ids.size() > 2000;
+        if (large_case && variant > 1) {
+            continue;
+        }
+        const bool pass_ok = large_case ? runScalablePass(model, intervals, variant, alpha, threshold, &state, &error)
+                                        : runPass(model, intervals, variant, alpha, threshold, &state, &error);
+        if (!pass_ok) {
             last_error = error;
             continue;
         }
-        repair(model, intervals, alpha, threshold, &state);
+        if (!large_case) {
+            repair(model, intervals, alpha, threshold, &state);
+        }
         ValidationResult valid =
             validatePlacement(model, state.placements, intervals, alpha, threshold);
         if (!valid.ok) {

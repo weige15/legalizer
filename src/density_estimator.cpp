@@ -19,26 +19,27 @@ Rect binRect(const PlacementModel& model, int gx, int gy, int64_t grid) {
     return Rect{x0, y0, std::min(model.die.x1, x0 + grid), std::min(model.die.y1, y0 + grid)};
 }
 
-bool macroOverlaps(const PlacementModel& model, const Rect& rect) {
-    for (size_t obs_id : model.obstacle_ids) {
-        const auto& obs = model.instances[obs_id];
-        if (obs.type == InstanceType::Macro && overlaps(rect, obs.original)) {
-            return true;
-        }
-    }
-    return false;
+int clampBin(int v, int limit) {
+    return std::max(0, std::min(limit - 1, v));
 }
 
-int64_t cellAreaInRect(const PlacementModel& model, const std::vector<Point>& placements,
-                       const Rect& rect) {
-    int64_t area = 0;
-    for (size_t id : model.cell_ids) {
-        if (id >= placements.size()) {
-            continue;
-        }
-        area += overlapArea(model.rectAt(id, placements[id]), rect);
+void addRectAreaToBins(const PlacementModel& model, const Rect& rect, int64_t grid, int cols,
+                       int rows, std::vector<double>* areas) {
+    if (!overlaps(model.die, rect)) {
+        return;
     }
-    return area;
+    const int gx0 = clampBin(static_cast<int>((std::max(rect.x0, model.die.x0) - model.die.x0) / grid), cols);
+    const int gy0 = clampBin(static_cast<int>((std::max(rect.y0, model.die.y0) - model.die.y0) / grid), rows);
+    const int gx1 =
+        clampBin(static_cast<int>((std::min(rect.x1, model.die.x1) - model.die.x0 - 1) / grid), cols);
+    const int gy1 =
+        clampBin(static_cast<int>((std::min(rect.y1, model.die.y1) - model.die.y0 - 1) / grid), rows);
+    for (int gy = gy0; gy <= gy1; ++gy) {
+        for (int gx = gx0; gx <= gx1; ++gx) {
+            const Rect bin = binRect(model, gx, gy, grid);
+            (*areas)[static_cast<size_t>(gy) * cols + gx] += static_cast<double>(overlapArea(rect, bin));
+        }
+    }
 }
 
 }  // namespace
@@ -52,18 +53,46 @@ DensitySummary computeDensitySummary(const PlacementModel& model, const std::vec
     const int cols = static_cast<int>((model.dieWidth() + grid - 1) / grid);
     const int rows = static_cast<int>((model.dieHeight() + grid - 1) / grid);
 
+    std::vector<char> macro_covered(static_cast<size_t>(cols) * rows, 0);
+    for (size_t obs_id : model.obstacle_ids) {
+        const auto& obs = model.instances[obs_id];
+        if (obs.type != InstanceType::Macro || !overlaps(model.die, obs.original)) {
+            continue;
+        }
+        const Rect& rect = obs.original;
+        const int gx0 = clampBin(static_cast<int>((std::max(rect.x0, model.die.x0) - model.die.x0) / grid), cols);
+        const int gy0 = clampBin(static_cast<int>((std::max(rect.y0, model.die.y0) - model.die.y0) / grid), rows);
+        const int gx1 = clampBin(
+            static_cast<int>((std::min(rect.x1, model.die.x1) - model.die.x0 - 1) / grid), cols);
+        const int gy1 = clampBin(
+            static_cast<int>((std::min(rect.y1, model.die.y1) - model.die.y0 - 1) / grid), rows);
+        for (int gy = gy0; gy <= gy1; ++gy) {
+            for (int gx = gx0; gx <= gx1; ++gx) {
+                if (overlaps(binRect(model, gx, gy, grid), rect)) {
+                    macro_covered[static_cast<size_t>(gy) * cols + gx] = 1;
+                }
+            }
+        }
+    }
+
+    std::vector<double> movable_area(static_cast<size_t>(cols) * rows, 0.0);
+    for (size_t id : model.cell_ids) {
+        if (id < placements.size()) {
+            addRectAreaToBins(model, model.rectAt(id, placements[id]), grid, cols, rows, &movable_area);
+        }
+    }
+
     DensitySummary summary;
     for (int gy = 0; gy < rows; ++gy) {
         for (int gx = 0; gx < cols; ++gx) {
             Rect bin = binRect(model, gx, gy, grid);
             const int64_t bin_area = (bin.x1 - bin.x0) * (bin.y1 - bin.y0);
-            if (bin_area <= 0 || macroOverlaps(model, bin)) {
+            const size_t index = static_cast<size_t>(gy) * cols + gx;
+            if (bin_area <= 0 || macro_covered[index]) {
                 continue;
             }
             ++summary.total_bins;
-            const double density =
-                100.0 * static_cast<double>(cellAreaInRect(model, placements, bin)) /
-                static_cast<double>(bin_area);
+            const double density = 100.0 * movable_area[index] / static_cast<double>(bin_area);
             if (density > threshold) {
                 ++summary.overflow_bins;
             }
@@ -170,7 +199,15 @@ double estimateLocalDensityPenalty(const PlacementModel& model,
         for (int gx = gx0; gx <= gx1; ++gx) {
             Rect bin = binRect(model, gx, gy, grid);
             const int64_t bin_area = (bin.x1 - bin.x0) * (bin.y1 - bin.y0);
-            if (bin_area <= 0 || macroOverlaps(model, bin)) {
+            bool macro_hit = false;
+            for (size_t obs_id : model.obstacle_ids) {
+                const auto& obs = model.instances[obs_id];
+                if (obs.type == InstanceType::Macro && overlaps(bin, obs.original)) {
+                    macro_hit = true;
+                    break;
+                }
+            }
+            if (bin_area <= 0 || macro_hit) {
                 continue;
             }
             int64_t area = overlapArea(trial, bin);
