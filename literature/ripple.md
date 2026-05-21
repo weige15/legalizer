@@ -1,30 +1,32 @@
 # Ripple
 
-Source type: open-source C++ placement/legalization repository  
+Source type: open-source C++ placement/legalization repository
+
 URL: https://github.com/cuhk-eda/ripple
 
 ## Summary
 
-Ripple is a VLSI placement tool from CUHK. Its README describes algorithms and data structures for mixed-cell-height legalization, routability-driven placement, maximum displacement optimization, and fixed-row-and-order optimization.
+Ripple is a VLSI placement tool from CUHK. Its README describes a holistic framework for mixed-cell-height legalization and routability-driven placement, including:
 
-The repository cites several related papers, including:
+- window-based cell insertion,
+- iterative network-flow maximum-displacement optimization,
+- dual-network-flow fixed-row-and-order optimization,
+- fence-aware and pin-accessible legalization papers.
 
-- `Legalization Algorithm for Multiple-Row Height Standard Cell Design`, DAC 2016.
-- `Routability-Driven and Fence-Aware Legalization for Mixed-Cell-Height Circuits`, DAC 2018.
-- `Pin-Accessible Legalization for Mixed-Cell-Height Circuits`, TCAD 2021.
+## Relevance To The Assignment
 
-## Relevance To `p3_placement.pdf`
+The public assignment cases appear simpler than Ripple's target problem, but Ripple is valuable for advanced repair ideas once a baseline legalizer is working:
 
-The assignment's public cases seem simpler than Ripple's target problem, but Ripple is valuable for advanced repair ideas once the baseline legalizer works:
-
-- local window insertion;
-- maximum displacement optimization;
-- fixed row/order movement optimization;
-- routability/density-aware legal moves.
+- high-displacement local repair,
+- fixed-row/order compaction,
+- nearby window insertion,
+- routability or density-aware legal moves.
 
 ## Implementation Ideas
 
-- Add a local repair phase for cells with very high displacement.
-- Try fixed-row/order compaction to reduce displacement after all cells are legal.
-- Use window-based insertion only where a move reduces the final objective and preserves legality.
+- Identify cells with unusually high displacement after Abacus/Tetris.
+- Extract a small row/interval window around the original coordinate.
+- Enumerate valid insertion gaps in nearby rows.
+- Repack the affected window and commit only if assignment quality improves.
+- Avoid full network-flow machinery unless simpler repairs fail on hidden cases.
 

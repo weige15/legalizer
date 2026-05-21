@@ -1,21 +1,35 @@
 # Legalization Algorithm for Multiple-Row Height Standard Cell Design
 
-Source type: paper  
-Local file: `Legalization_algorithm_for_multiple-row_height_standard_cell_design.pdf`  
+Source type: paper
+
 Citation: Wing-Kai Chow, Chak-Wa Pui, Evangeline F. Y. Young, DAC 2016, DOI `10.1145/2897937.2898038`
+
+Related repository reference: https://github.com/cuhk-eda/ripple
+
+DOI: https://doi.org/10.1145/2897937.2898038
 
 ## Summary
 
-This paper addresses legalization when cells can span multiple placement rows. The core algorithm performs multi-row local legalization by selecting a local region, enumerating valid insertion points, evaluating displacement, and realizing a legal placement with minimal movement in that local window.
+This paper addresses legalization when cells can span multiple placement rows. The core approach uses local regions/windows, insertion-point enumeration, and displacement-aware legal movement while respecting row/order constraints.
 
-## Relevance To `p3_placement.pdf`
+## Relevance To The Assignment
 
-The assignment examples use site-height cells, so full multi-row machinery may not be necessary. The local insertion idea is still useful for post-processing: when a cell is placed far from its original position, a bounded local window can try to reinsert it closer and push neighboring cells minimally.
+The assignment examples appear to use single-row standard cells, so the full multi-row machinery is probably unnecessary. The local insertion framework is still useful for post-processing:
+
+- repair cells with high displacement,
+- move cells into nearby legal gaps,
+- preserve legality while changing a small window,
+- avoid destabilizing the whole placement.
 
 ## Implementation Ideas
 
 - Identify high-displacement cells after initial legalization.
-- Extract a small row/interval window near the original coordinate.
-- Enumerate insertion gaps in nearby rows.
-- Commit the best legal move only if final quality improves.
+- Extract a small window of nearby rows/subrows.
+- Enumerate legal insertion positions around the cell's original coordinate.
+- Repack affected cells with an Abacus-style row solver.
+- Commit only if the final assignment quality improves.
+
+## Practical Takeaway
+
+Use this as a local repair pattern after a robust single-row Abacus or Tetris legalizer is already working. It is a refinement source, not the base legalizer for this homework.
 

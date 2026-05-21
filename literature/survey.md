@@ -1,120 +1,167 @@
-# Literature Survey: P3 Placement / Legalization
+# Literature Survey: P3 Placement Legalization
 
-Date: 2026-05-21
+Date: 2026-05-22
 
 ## Scope
 
-The assignment `p3_placement.pdf` asks for a standalone `Legalizer <alpha> <threshold> <input.gp> <output.tcl>` implementation for OpenROAD-generated global placement. The legalizer must place movable standard cells on legal rows/sites, avoid macros/blockages, minimize average displacement, and reduce density overflow ratio (DOR) over 10um x 10um grids excluding macro-covered bins. It forbids using `detailed_placement` in the submitted output TCL.
+`p3_placement_v2.pdf` asks for a standalone legalizer for OpenROAD-extracted global placement. The legalizer must place movable standard cells on legal rows/sites, avoid fixed macros and blockages, minimize average displacement, and reduce density overflow ratio (DOR) over 10 um by 10 um grids excluding macro-covered bins.
+
+The assignment forbids emitting an OpenROAD `detailed_placement` command in the final TCL, so OpenROAD/OpenDP is useful as a reference, not as a command to call in the submitted output.
 
 ## Direct Assignment/Solution Search
 
-I searched for exact public copies or solutions using the distinctive terms:
+I searched for exact public copies or solutions using distinctive terms:
 
-- `"p3_placement.pdf" "Legalizer"`
-- `"./Legalizer <alpha> <threshold>" placement`
-- `"Placement with OpenROAD" "Programming Assignment #3"`
-- `"Mark P.-H. Lin" "Placement with OpenROAD"`
-- `"Quality = α" "Average Displacement" "DOR" "Legalizer"`
-- `"ispd15_mgc_matrix_mult_a" Legalizer GitHub`
+- `"p3_placement_v2.pdf"`
+- `"Placement with OpenROAD" "Legalizer"`
+- `"./Legalizer <alpha> <threshold>"`
+- `"Quality = alpha" "Average Displacement" "DOR" "Legalizer"`
+- `"ispd15_mgc_matrix_mult_a" Legalizer`
 - `"mgc_matrix_mult_a" "Legalizer"`
 
-Result: I did not find an exact public solution repository for this NYCU assignment. Treat the sources below as algorithmic references, not assignment-specific solutions. The assignment also explicitly forbids plagiarism.
+Outcome: I did not find an exact public solution repository for this NYCU assignment. Treat the notes below as algorithmic references, not assignment-specific code to copy. The assignment also explicitly forbids plagiarism.
 
-## Most Useful Sources
+## Best References For This Assignment
 
 ### 1. Abacus: Fast Legalization of Standard Cell Circuits with Minimal Movement
 
-Type: paper; local copy: `abacus.pdf`
+Type: paper
 
-Why it matters: This is the closest match to the assignment objective of minimizing displacement while legalizing to rows. The method sorts cells, tries candidate rows, inserts each cell into the row order, and uses a cluster/dynamic-programming row solver (`PlaceRow`) to minimize movement of the row after insertion. The paper reports around 30% lower average movement than Tetris-style legalization.
+URL: https://spacefrontiers.org/r/10.1145/1353629.1353640
 
-Implementation ideas for this repo:
+DOI: https://doi.org/10.1145/1353629.1353640
 
-- Replace interval re-solving with true Abacus cluster collapse.
-- Use row search with vertical lower-bound pruning.
-- Compare left-to-right and right-to-left passes.
-- Score candidates by incremental final objective, not only the inserted cell.
+Why it matters: Abacus is the closest match to the average-displacement objective. It legalizes cells row-by-row while allowing already-placed cells in a row to move via cluster reoptimization. That is stronger than greedy Tetris placement when displacement dominates the score.
 
-### 2. OpenROAD Detailed Placement / OpenDP
+Implementation direction:
 
-Type: open-source implementation and documentation
+- Split rows into legal intervals around macros and blockages.
+- Sort movable cells by original x-coordinate.
+- Try candidate rows near the original y-coordinate.
+- For each trial insertion, run an Abacus-style cluster row solver.
+- Prune far rows once vertical displacement alone exceeds the current best candidate.
 
-URLs:
+### 2. Improved Parallel Legalization Schemes for Standard Cell Placement with Obstacles
 
-- https://openroad.readthedocs.io/en/latest/main/src/dpl/README.html
-- https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/dpl
+Type: paper
 
-Why it matters: OpenROAD's `dpl` module is the tool the assignment prohibits directly calling in output TCL, but its public code/docs explain practical legalization strategies. Current docs describe a default diamond-search legalizer and an optional negotiation legalizer with an Abacus pre-pass.
+URL: https://www.mdpi.com/2227-7080/7/1/3
 
-Implementation ideas for this repo:
+DOI: https://doi.org/10.3390/technologies7010003
 
-- Diamond/BFS search from original cell location is a simple baseline for reducing max displacement.
-- `improve_placement`-style local swaps can be adapted as a post-legalization refinement, without calling OpenROAD's command.
-- Fragmented rows, macro blocks, and mixed-height support in OpenDP are useful design references for row interval handling.
+Why it matters: The assignment includes macros and blockages, which create obstacle-aware row intervals. This paper explicitly extends Tetris and Abacus to handle obstacles and discusses partitioning the chip area for runtime.
 
-### 3. LibreEDA `tetris_legalizer`
+Implementation direction:
 
-Type: open-source Rust implementation
+- Model each row as subrows/intervals separated by obstacle projections.
+- Treat each interval independently for row packing.
+- Use partitioning only after single-threaded legality and quality are stable.
 
-URLs:
+### 3. OpenROAD Detailed Placement / OpenDP
 
-- https://libreda.org/doc/tetris_legalizer/index.html
+Type: official documentation and open-source C++ codebase
 
-Why it matters: This is a compact educational legalizer implementation. The docs say it includes Tetris, DenseFirst, and DenseFirstMS legalizers, including support for pre-placed macros/complicated placement areas in the MS variant.
+Docs: https://openroad.readthedocs.io/en/latest/main/src/dpl/README.html
 
-Implementation ideas for this repo:
+Code: https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/dpl
 
-- Use as a conceptual reference for simple legalizer architecture and test cases.
-- Tetris-like legalization is fast and easy to implement, but likely worse for displacement than Abacus.
-- Dense-first variants may help DOR because they consider occupied regions explicitly.
+Why it matters: OpenROAD's detailed placement module is the practical tool environment for this assignment. The docs describe fragmented rows, macro blocks, fence regions, mixed-cell-height handling, a diamond-search placement engine, and a negotiation legalizer with an optional Abacus pre-pass.
 
-### 4. Ripple
+Implementation direction:
+
+- Use OpenDP's architecture as a reference for row/site representation and legality checking.
+- Adapt the idea of diamond/BFS search from a cell's global-placement location as a local fallback.
+- Do not emit `detailed_placement` in final TCL.
+
+### 4. LibreEDA `tetris_legalizer`
+
+Type: open-source Rust crate documentation
+
+URL: https://libreda.org/doc/tetris_legalizer/index.html
+
+Why it matters: This is a compact educational implementation reference for legalization. Its documented variants include a basic Tetris legalizer and a mixed-size/dense-first legalizer that supports pre-placed macros and complicated placement-area shapes.
+
+Implementation direction:
+
+- Use Tetris as a simple baseline or fallback path.
+- Use the mixed-size/dense-first framing as a reference for macro/blockage handling.
+- Prefer Abacus-style row reoptimization for final displacement quality.
+
+### 5. Density-aware Detailed Placement with Instant Legalization
+
+Type: paper metadata and algorithm reference
+
+URL: https://scholar.nycu.edu.tw/en/publications/density-aware-detailed-placement-with-instant-legalization/
+
+DOI: https://doi.org/10.1145/2593069.2593142
+
+Why it matters: The assignment explicitly includes DOR in the score. This DAC 2014 paper targets peak bin utilization under displacement constraints using a lazy density-profit function and density-driven swaps.
+
+Implementation direction:
+
+- Add a post-legalization density repair phase only after base legality is robust.
+- Track 10 um by 10 um bin occupancy excluding macro-covered bins.
+- Try local moves or swaps that reduce overflow bins without increasing displacement enough to hurt the final weighted objective.
+
+### 6. Ripple
 
 Type: open-source C++ placement/legalization repository
 
 URL: https://github.com/cuhk-eda/ripple
 
-Why it matters: Ripple is a CUHK EDA placement tool with mixed-cell-height legalization, routability-driven placement, maximum displacement optimization, and fixed-row/order optimization. It cites several related legalization papers.
+Why it matters: Ripple is an advanced legalization and routability-driven placement codebase. It includes mixed-cell-height legalization, maximum displacement optimization, and fixed-row/order optimization. The assignment cases are simpler, but Ripple gives useful local repair ideas.
 
-Implementation ideas for this repo:
+Implementation direction:
 
-- Window-based insertion can be adapted for local repair of high-displacement cells.
-- Network-flow maximum displacement optimization is overkill for the current assignment, but useful if max displacement remains very large.
-- Fixed-row-and-order optimization aligns with our row interval model.
+- Use window-based insertion for high-displacement outliers.
+- Use fixed-row/order optimization as a local compaction/refinement pass.
+- Treat network-flow maximum displacement optimization as a later upgrade, not the first implementation.
 
-### 5. Legalization Algorithm for Multiple-Row Height Standard Cell Design
+### 7. easyPlace
 
-Type: paper; local copy: `Legalization_algorithm_for_multiple-row_height_standard_cell_design.pdf`
+Type: open-source C++ placement repository
 
-Why it matters: The public cases appear single-row, but this paper gives a local insertion/legalization framework that is useful for window-based post-processing. It minimizes displacement in a local region while preserving row/order constraints.
+URL: https://github.com/geziangfinn/easyPlace
 
-Implementation ideas for this repo:
+Why it matters: The README says the project reimplements ePlace/ePlace-MS and applies Abacus for internal standard-cell legalization. It also includes detailed-placement techniques such as independent set matching, local reordering, and global swap.
 
-- Local window repair around high-displacement cells.
-- Enumerate insertion gaps and evaluate displacement before committing.
-- Keep this as a later-stage optimization after a robust Abacus-style base legalizer.
+Implementation direction:
 
-### 6. Density-aware Detailed Placement with Instant Legalization
+- Study the separation between legalization and detailed-placement improvement passes.
+- Use Abacus as the base legalizer, then add local reorder/swap style refinements.
 
-Type: paper metadata / algorithm reference
+### 8. DREAMPlace
 
-URL: https://scholar.nycu.edu.tw/en/publications/density-aware-detailed-placement-with-instant-legalization/
+Type: open-source placement repository
 
-Why it matters: The assignment's DOR metric makes density-aware post-legalization relevant. This paper focuses on detailed placement that reduces HPWL and peak bin utilization under displacement constraints using lazy density profit and density-driven swaps.
+URL: https://github.com/limbo018/DREAMPlace
 
-Implementation ideas for this repo:
+Why it matters: DREAMPlace is mainly a global placer, but its later versions integrate ABCDPlace for detailed placement and support independent set matching, local reordering, global swap, Tetris-like macro legalization, and min-cost-flow refinement.
 
-- Add a density profit function for local moves/swaps.
-- Evaluate move candidates by whether they reduce overflow bins without increasing displacement too much.
-- Use after displacement is already acceptable; current `mgc_matrix_mult_a` score is still displacement-dominated.
+Implementation direction:
 
-## Practical Direction For Our Legalizer
+- It is too large to adapt directly for this assignment.
+- Its detailed-placement feature list supports the same high-level plan: legalize first, then improve by deterministic local reorder/swap operations.
 
-The best near-term route is not to copy an assignment solution, but to implement known legalization ideas:
+### 9. History-based VLSI Legalization Using Network Flow
 
-1. Implement true Abacus row clusters for lower displacement.
-2. Add row search pruning by vertical displacement lower bound.
-3. Add high-displacement local repair using window insertion or nearest-site diamond search.
-4. Add density-aware swaps only after displacement improves.
-5. Keep `flow.tcl` using our standalone `Legalizer`, not OpenROAD `detailed_placement`, to respect assignment rules.
+Type: paper metadata
+
+URL: https://research.ibm.com/publications/history-based-vlsi-legalization-using-network-flow
+
+Why it matters: This DAC 2010 paper frames legalization as min-cost network flow to minimize deviation from global placement. It is more complex than needed for a homework legalizer, but useful if the design has severe overflow or high max displacement.
+
+Implementation direction:
+
+- Consider flow only as a later-stage repair for congested regions.
+- For the near term, Abacus plus density repair is more implementation-efficient.
+
+## Recommended Implementation Path
+
+1. Build a robust row-interval model from the die area, site dimensions, macros, and blockages.
+2. Implement a Tetris baseline for guaranteed legality.
+3. Replace or augment it with Abacus cluster placement to reduce average displacement.
+4. Add local repair for high-displacement cells using nearby row windows.
+5. Add DOR-aware swaps/moves that evaluate the assignment's exact weighted metric.
+6. Keep output limited to explicit `place_cell` commands.
 

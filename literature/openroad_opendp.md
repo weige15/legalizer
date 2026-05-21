@@ -1,25 +1,33 @@
 # OpenROAD Detailed Placement / OpenDP
 
-Source type: open-source tool and documentation  
-Docs: https://openroad.readthedocs.io/en/latest/main/src/dpl/README.html  
+Source type: official documentation and open-source tool
+
+Docs: https://openroad.readthedocs.io/en/latest/main/src/dpl/README.html
+
 Code: https://github.com/The-OpenROAD-Project/OpenROAD/tree/master/src/dpl
 
 ## Summary
 
-OpenROAD's detailed placement module (`dpl`) is based on OpenDP. Documentation lists support for fragmented rows, fence regions, macro blocks, and mixed-cell-height legalization. The default engine performs a diamond/BFS-style search outward from each cell's global placement position. Current docs also describe a `NegotiationLegalizer` with an optional Abacus pre-pass.
+OpenROAD's detailed placement module (`dpl`) is based on OpenDP. The official docs list support for fragmented rows, fence regions, macro blocks, mixed-cell-height legalization, and two placement engines. The default engine performs a diamond/BFS-style search outward from each cell's global placement position. The optional negotiation legalizer uses a two-pass strategy with an optional Abacus pre-pass.
 
-## Relevance To `p3_placement.pdf`
+## Relevance To The Assignment
 
-The assignment forbids directly emitting `detailed_placement` in the final output TCL, so OpenDP cannot be used as the submitted legalizer command. It is still a legitimate reference for architecture, legality checks, row/site representation, local search, and post-placement improvement.
+The assignment is built around OpenROAD and emits OpenROAD TCL. OpenDP is therefore the most practical reference for:
+
+- row and site representation,
+- fragmented rows caused by macros/blockages,
+- legality checking,
+- local search from global-placement coordinates,
+- post-legalization improvement.
+
+## Important Constraint
+
+The assignment explicitly forbids using `detailed_placement` in the final output TCL. Reading public docs/source to understand techniques is different from calling the prohibited command. The submitted output should contain explicit `place_cell` commands only.
 
 ## Implementation Ideas
 
-- Use diamond-search behavior as a simple local fallback for cells with high displacement.
-- Add `improve_placement`-style local swaps in our own code after initial legalization.
-- Study fragmented row/macro handling to improve row interval construction.
-- Keep our output as explicit `place_cell` commands only.
-
-## Caution
-
-Do not call OpenROAD `detailed_placement` from generated TCL. The assignment says that violates the rules. Reading the public source/docs to understand techniques is different from calling the prohibited command.
+- Use diamond-search behavior as a simple fallback for cells that Abacus places far away.
+- Add local swaps after legalization, similar in spirit to detailed-placement improvement passes.
+- Use OpenDP's fragmented row model as a sanity check for row interval construction.
+- Add a `check_placement`-like internal validator before writing the final TCL.
 
