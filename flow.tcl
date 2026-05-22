@@ -188,6 +188,9 @@ proc remove_macros_for_heatmap {block} {
 
 proc report_dor {case_name design_name threshold} {
     set heat_name [file join $case_name "${design_name}_heat.csv"]
+    if {[catch {gui::set_heatmap "Placement" rebuild} result]} {
+        puts "WARNING: could not rebuild OpenROAD placement heatmap: $result"
+    }
     if {[catch {gui::dump_heatmap "Placement" $heat_name} result]} {
         puts "WARNING: could not dump OpenROAD placement heatmap: $result"
         return [dict create total_grids 0 overflow_grids 0 dor 0.0 heat_name ""]
