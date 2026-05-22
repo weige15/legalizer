@@ -130,6 +130,15 @@ struct GapChoice {
   long double score = 0.0;
 };
 
+struct RepairCandidate {
+  int rowIndex = 0;
+  int intervalIndex = 0;
+  std::vector<int> order;
+  std::vector<Dbu> xs;
+  long double pressure = 0.0;
+  long double displacementMicron = 0.0;
+};
+
 bool betterGap(const GapChoice &a, const GapChoice &b) {
   if (!b.valid) return true;
   if (a.score != b.score) return a.score < b.score;
@@ -150,6 +159,27 @@ Dbu clampClusterOrigin(const Tech &tech, long double target, Dbu minX, Dbu maxX)
     return snapDownToSite(tech, maxX);
   }
   return clampSiteOrigin(tech, static_cast<Dbu>(rounded), minX, maxX);
+}
+
+long double placementDensityPressure(const Cell &cell, Point placed,
+                                     const std::vector<DensityGridInfo> &grids,
+                                     double threshold) {
+  Rect placedRect = rectForCell(cell, placed);
+  long double pressure = 0.0;
+  long double cellArea = static_cast<long double>(rectArea(placedRect));
+  if (cellArea <= 0.0) {
+    return pressure;
+  }
+  for (const DensityGridInfo &grid : grids) {
+    long double area = intersectionArea(grid.rect, placedRect);
+    if (area <= 0.0) {
+      continue;
+    }
+    long double weight = area / cellArea;
+    long double overflowPenalty = grid.densityPercent > threshold ? 1000.0L : 0.0L;
+    pressure += weight * (overflowPenalty + grid.densityPercent);
+  }
+  return pressure;
 }
 
 }  // namespace
@@ -429,12 +459,10 @@ Status runDorRepair(PlacementModel *model, std::vector<Row> *rows, double alpha,
         }
         trialModel.cells.at(static_cast<std::size_t>(cellId)).placedValid = false;
 
-        PlacementModel bestModel;
-        std::vector<Row> bestRows;
-        Metrics bestMetrics = current;
-        bool foundBetter = false;
-        const int maxCandidateRows = 12;
-        const int maxCandidatePlacements = 12;
+        std::vector<RepairCandidate> repairCandidates;
+        const int maxCandidateRows = 32;
+        const int maxCandidatePlacements = 64;
+        const int maxExactCandidates = 12;
         int inspectedRows = 0;
         int inspectedPlacements = 0;
         const Cell &cell = trialModel.cells.at(static_cast<std::size_t>(cellId));
@@ -455,30 +483,71 @@ Status runDorRepair(PlacementModel *model, std::vector<Row> *rows, double alpha,
               continue;
             }
             ++inspectedPlacements;
-            PlacementModel candidateModel = trialModel;
-            std::vector<Row> candidateRows = trialRows;
-            RowInterval &candidateInterval =
-                candidateRows.at(static_cast<std::size_t>(rowIdx))
-                    .intervals.at(static_cast<std::size_t>(interval.intervalIndex));
             std::vector<int> order =
-                insertionOrderFor(candidateModel, candidateInterval, cellId);
+                insertionOrderFor(trialModel, interval, cellId);
             IntervalSolveResult solved =
-                solveIntervalAbacus(candidateModel, candidateInterval, order);
+                solveIntervalAbacus(trialModel, interval, order);
             if (!solved.ok) {
               continue;
             }
-            commitInterval(&candidateModel, &candidateInterval, order, solved.xByOrder);
-            diagnostics = validateLegality(candidateModel, candidateRows);
-            if (!diagnostics.empty()) {
+            Dbu placedX = 0;
+            bool foundCell = false;
+            for (std::size_t i = 0; i < order.size(); ++i) {
+              if (order[i] == cellId) {
+                placedX = solved.xByOrder[i];
+                foundCell = true;
+                break;
+              }
+            }
+            if (!foundCell) {
               continue;
             }
-            Metrics candidate = evaluateMetrics(candidateModel, alpha, threshold);
-            if (candidate.quality + epsilon < bestMetrics.quality) {
+            Point placed{placedX, interval.y};
+            long double disp = std::llabs(placed.x - cell.original.x) +
+                               std::llabs(placed.y - cell.original.y);
+            repairCandidates.push_back(RepairCandidate{
+                rowIdx, interval.intervalIndex, order, solved.xByOrder,
+                placementDensityPressure(cell, placed, grids, threshold),
+                static_cast<long double>(dbuToMicron(trialModel.tech, disp))});
+          }
+        }
+
+        std::sort(repairCandidates.begin(), repairCandidates.end(),
+                  [](const RepairCandidate &a, const RepairCandidate &b) {
+                    if (a.pressure != b.pressure) return a.pressure < b.pressure;
+                    if (a.displacementMicron != b.displacementMicron) {
+                      return a.displacementMicron < b.displacementMicron;
+                    }
+                    return std::tie(a.rowIndex, a.intervalIndex) <
+                           std::tie(b.rowIndex, b.intervalIndex);
+                  });
+
+        PlacementModel bestModel;
+        std::vector<Row> bestRows;
+        Metrics bestMetrics = current;
+        bool foundBetter = false;
+        int exactCandidates = 0;
+        for (const RepairCandidate &repairCandidate : repairCandidates) {
+          if (exactCandidates++ >= maxExactCandidates) {
+            break;
+          }
+          PlacementModel candidateModel = trialModel;
+          std::vector<Row> candidateRows = trialRows;
+          RowInterval &candidateInterval =
+              candidateRows.at(static_cast<std::size_t>(repairCandidate.rowIndex))
+                  .intervals.at(static_cast<std::size_t>(repairCandidate.intervalIndex));
+          commitInterval(&candidateModel, &candidateInterval, repairCandidate.order,
+                         repairCandidate.xs);
+          diagnostics = validateLegality(candidateModel, candidateRows);
+          if (!diagnostics.empty()) {
+            continue;
+          }
+          Metrics candidate = evaluateMetrics(candidateModel, alpha, threshold);
+          if (candidate.quality + epsilon < bestMetrics.quality) {
               bestModel = candidateModel;
               bestRows = candidateRows;
               bestMetrics = candidate;
               foundBetter = true;
-            }
           }
         }
 
