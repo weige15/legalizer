@@ -90,7 +90,7 @@ void commitInterval(PlacementModel *model, RowInterval *interval,
   }
 }
 
-std::vector<int> cellProcessingOrder(const PlacementModel &model) {
+std::vector<int> cellProcessingOrder(const PlacementModel &model, bool reverse) {
   std::vector<int> order(model.cells.size());
   for (std::size_t i = 0; i < model.cells.size(); ++i) {
     order[i] = static_cast<int>(i);
@@ -102,6 +102,9 @@ std::vector<int> cellProcessingOrder(const PlacementModel &model) {
     if (ca.original.y != cb.original.y) return ca.original.y < cb.original.y;
     return ca.name < cb.name;
   });
+  if (reverse) {
+    std::reverse(order.begin(), order.end());
+  }
   return order;
 }
 
@@ -130,15 +133,6 @@ struct GapChoice {
   long double score = 0.0;
 };
 
-struct RepairCandidate {
-  int rowIndex = 0;
-  int intervalIndex = 0;
-  std::vector<int> order;
-  std::vector<Dbu> xs;
-  long double pressure = 0.0;
-  long double displacementMicron = 0.0;
-};
-
 bool betterGap(const GapChoice &a, const GapChoice &b) {
   if (!b.valid) return true;
   if (a.score != b.score) return a.score < b.score;
@@ -161,25 +155,70 @@ Dbu clampClusterOrigin(const Tech &tech, long double target, Dbu minX, Dbu maxX)
   return clampSiteOrigin(tech, static_cast<Dbu>(rounded), minX, maxX);
 }
 
-long double placementDensityPressure(const Cell &cell, Point placed,
-                                     const std::vector<DensityGridInfo> &grids,
-                                     double threshold) {
-  Rect placedRect = rectForCell(cell, placed);
-  long double pressure = 0.0;
-  long double cellArea = static_cast<long double>(rectArea(placedRect));
-  if (cellArea <= 0.0) {
-    return pressure;
-  }
-  for (const DensityGridInfo &grid : grids) {
-    long double area = intersectionArea(grid.rect, placedRect);
-    if (area <= 0.0) {
+}  // namespace
+
+namespace {
+
+Status legalizePlacementWithOrder(PlacementModel *model, std::vector<Row> *rows,
+                                  bool reverseOrder) {
+  for (int cellId : cellProcessingOrder(*model, reverseOrder)) {
+    const Cell &cell = model->cells.at(static_cast<std::size_t>(cellId));
+    Candidate best;
+    int inspectedRows = 0;
+    for (int rowIdx : rowSearchOrder(model->tech, cell.original.y)) {
+      if (rowIdx < 0 || rowIdx >= static_cast<int>(rows->size())) {
+        continue;
+      }
+      Dbu verticalCost = std::llabs(rowY(model->tech, rowIdx) - cell.original.y);
+      if (best.valid && static_cast<long double>(verticalCost) > best.score) {
+        break;
+      }
+      Row &row = rows->at(static_cast<std::size_t>(rowIdx));
+      ++inspectedRows;
+      bool rowHasCapacity = false;
+      for (RowInterval &interval : row.intervals) {
+        if (interval.occupiedWidth + cell.width > interval.xMax - interval.xMin) {
+          continue;
+        }
+        rowHasCapacity = true;
+        std::vector<int> order = insertionOrderFor(*model, interval, cellId);
+        IntervalSolveResult solved = solveIntervalAbacus(*model, interval, order);
+        if (!solved.ok) {
+          continue;
+        }
+        long double score = solved.cost - currentIntervalCost(*model, interval);
+        bool better = !best.valid || score < best.score ||
+                      (score == best.score &&
+                       std::tie(rowIdx, interval.intervalIndex) <
+                           std::tie(best.rowIndex, best.intervalIndex));
+        if (better) {
+          best.valid = true;
+          best.rowIndex = rowIdx;
+          best.intervalIndex = interval.intervalIndex;
+          best.order = order;
+          best.xs = solved.xByOrder;
+          best.score = score;
+        }
+      }
+      if (best.valid && rowHasCapacity && inspectedRows >= 12) {
+        break;
+      }
+    }
+    if (best.valid) {
+      RowInterval &interval =
+          rows->at(static_cast<std::size_t>(best.rowIndex))
+              .intervals.at(static_cast<std::size_t>(best.intervalIndex));
+      commitInterval(model, &interval, best.order, best.xs);
       continue;
     }
-    long double weight = area / cellArea;
-    long double overflowPenalty = grid.densityPercent > threshold ? 1000.0L : 0.0L;
-    pressure += weight * (overflowPenalty + grid.densityPercent);
+
+    Status fallback = tetrisPlaceCell(model, rows, cellId);
+    if (!fallback.ok) {
+      return Status::Error("failed to legalize CELL '" + cell.name + "': " +
+                           fallback.message);
+    }
   }
-  return pressure;
+  return Status::Ok();
 }
 
 }  // namespace
@@ -274,64 +313,11 @@ IntervalSolveResult solveIntervalAbacus(const PlacementModel &model,
 }
 
 Status legalizePlacement(PlacementModel *model, std::vector<Row> *rows) {
-  for (int cellId : cellProcessingOrder(*model)) {
-    const Cell &cell = model->cells.at(static_cast<std::size_t>(cellId));
-    Candidate best;
-    int inspectedRows = 0;
-    for (int rowIdx : rowSearchOrder(model->tech, cell.original.y)) {
-      if (rowIdx < 0 || rowIdx >= static_cast<int>(rows->size())) {
-        continue;
-      }
-      Dbu verticalCost = std::llabs(rowY(model->tech, rowIdx) - cell.original.y);
-      if (best.valid && static_cast<long double>(verticalCost) > best.score) {
-        break;
-      }
-      Row &row = rows->at(static_cast<std::size_t>(rowIdx));
-      ++inspectedRows;
-      bool rowHasCapacity = false;
-      for (RowInterval &interval : row.intervals) {
-        if (interval.occupiedWidth + cell.width > interval.xMax - interval.xMin) {
-          continue;
-        }
-        rowHasCapacity = true;
-        std::vector<int> order = insertionOrderFor(*model, interval, cellId);
-        IntervalSolveResult solved = solveIntervalAbacus(*model, interval, order);
-        if (!solved.ok) {
-          continue;
-        }
-        long double score = solved.cost - currentIntervalCost(*model, interval);
-        bool better = !best.valid || score < best.score ||
-                      (score == best.score &&
-                       std::tie(rowIdx, interval.intervalIndex) <
-                           std::tie(best.rowIndex, best.intervalIndex));
-        if (better) {
-          best.valid = true;
-          best.rowIndex = rowIdx;
-          best.intervalIndex = interval.intervalIndex;
-          best.order = order;
-          best.xs = solved.xByOrder;
-          best.score = score;
-        }
-      }
-      if (best.valid && rowHasCapacity && inspectedRows >= 12) {
-        break;
-      }
-    }
-    if (best.valid) {
-      RowInterval &interval =
-          rows->at(static_cast<std::size_t>(best.rowIndex))
-              .intervals.at(static_cast<std::size_t>(best.intervalIndex));
-      commitInterval(model, &interval, best.order, best.xs);
-      continue;
-    }
+  return legalizePlacementWithOrder(model, rows, false);
+}
 
-    Status fallback = tetrisPlaceCell(model, rows, cellId);
-    if (!fallback.ok) {
-      return Status::Error("failed to legalize CELL '" + cell.name + "': " +
-                           fallback.message);
-    }
-  }
-  return Status::Ok();
+Status legalizePlacementReverse(PlacementModel *model, std::vector<Row> *rows) {
+  return legalizePlacementWithOrder(model, rows, true);
 }
 
 Status tetrisPlaceCell(PlacementModel *model, std::vector<Row> *rows, int cellId) {
@@ -459,10 +445,12 @@ Status runDorRepair(PlacementModel *model, std::vector<Row> *rows, double alpha,
         }
         trialModel.cells.at(static_cast<std::size_t>(cellId)).placedValid = false;
 
-        std::vector<RepairCandidate> repairCandidates;
-        const int maxCandidateRows = 32;
-        const int maxCandidatePlacements = 64;
-        const int maxExactCandidates = 12;
+        PlacementModel bestModel;
+        std::vector<Row> bestRows;
+        Metrics bestMetrics = current;
+        bool foundBetter = false;
+        const int maxCandidateRows = 12;
+        const int maxCandidatePlacements = 12;
         int inspectedRows = 0;
         int inspectedPlacements = 0;
         const Cell &cell = trialModel.cells.at(static_cast<std::size_t>(cellId));
@@ -483,71 +471,30 @@ Status runDorRepair(PlacementModel *model, std::vector<Row> *rows, double alpha,
               continue;
             }
             ++inspectedPlacements;
+            PlacementModel candidateModel = trialModel;
+            std::vector<Row> candidateRows = trialRows;
+            RowInterval &candidateInterval =
+                candidateRows.at(static_cast<std::size_t>(rowIdx))
+                    .intervals.at(static_cast<std::size_t>(interval.intervalIndex));
             std::vector<int> order =
-                insertionOrderFor(trialModel, interval, cellId);
+                insertionOrderFor(candidateModel, candidateInterval, cellId);
             IntervalSolveResult solved =
-                solveIntervalAbacus(trialModel, interval, order);
+                solveIntervalAbacus(candidateModel, candidateInterval, order);
             if (!solved.ok) {
               continue;
             }
-            Dbu placedX = 0;
-            bool foundCell = false;
-            for (std::size_t i = 0; i < order.size(); ++i) {
-              if (order[i] == cellId) {
-                placedX = solved.xByOrder[i];
-                foundCell = true;
-                break;
-              }
-            }
-            if (!foundCell) {
+            commitInterval(&candidateModel, &candidateInterval, order, solved.xByOrder);
+            diagnostics = validateLegality(candidateModel, candidateRows);
+            if (!diagnostics.empty()) {
               continue;
             }
-            Point placed{placedX, interval.y};
-            long double disp = std::llabs(placed.x - cell.original.x) +
-                               std::llabs(placed.y - cell.original.y);
-            repairCandidates.push_back(RepairCandidate{
-                rowIdx, interval.intervalIndex, order, solved.xByOrder,
-                placementDensityPressure(cell, placed, grids, threshold),
-                static_cast<long double>(dbuToMicron(trialModel.tech, disp))});
-          }
-        }
-
-        std::sort(repairCandidates.begin(), repairCandidates.end(),
-                  [](const RepairCandidate &a, const RepairCandidate &b) {
-                    if (a.pressure != b.pressure) return a.pressure < b.pressure;
-                    if (a.displacementMicron != b.displacementMicron) {
-                      return a.displacementMicron < b.displacementMicron;
-                    }
-                    return std::tie(a.rowIndex, a.intervalIndex) <
-                           std::tie(b.rowIndex, b.intervalIndex);
-                  });
-
-        PlacementModel bestModel;
-        std::vector<Row> bestRows;
-        Metrics bestMetrics = current;
-        bool foundBetter = false;
-        int exactCandidates = 0;
-        for (const RepairCandidate &repairCandidate : repairCandidates) {
-          if (exactCandidates++ >= maxExactCandidates) {
-            break;
-          }
-          PlacementModel candidateModel = trialModel;
-          std::vector<Row> candidateRows = trialRows;
-          RowInterval &candidateInterval =
-              candidateRows.at(static_cast<std::size_t>(repairCandidate.rowIndex))
-                  .intervals.at(static_cast<std::size_t>(repairCandidate.intervalIndex));
-          commitInterval(&candidateModel, &candidateInterval, repairCandidate.order,
-                         repairCandidate.xs);
-          diagnostics = validateLegality(candidateModel, candidateRows);
-          if (!diagnostics.empty()) {
-            continue;
-          }
-          Metrics candidate = evaluateMetrics(candidateModel, alpha, threshold);
-          if (candidate.quality + epsilon < bestMetrics.quality) {
+            Metrics candidate = evaluateMetrics(candidateModel, alpha, threshold);
+            if (candidate.quality + epsilon < bestMetrics.quality) {
               bestModel = candidateModel;
               bestRows = candidateRows;
               bestMetrics = candidate;
               foundBetter = true;
+            }
           }
         }
 

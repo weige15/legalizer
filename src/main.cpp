@@ -65,14 +65,48 @@ int main(int argc, char **argv) {
     std::cerr << "error: " << status.message << "\n";
     return 1;
   }
-  std::cerr << "Running baseline legalizer\n";
+  legalizer::PlacementModel baseModel = model;
+  std::vector<legalizer::Row> baseRows = rows;
+
+  std::cerr << "Running baseline legalizer (forward order)\n";
   status = legalizer::legalizePlacement(&model, &rows);
-  if (!status.ok) {
-    std::cerr << "error: " << status.message << "\n";
-    return 1;
+  bool forwardOk = status.ok;
+  std::string forwardError = status.message;
+  legalizer::Metrics forwardMetrics;
+  if (forwardOk) {
+    forwardMetrics = legalizer::evaluateMetrics(model, alpha, threshold);
+    std::cerr << "Forward baseline Quality=" << forwardMetrics.quality
+              << " AvgDisp=" << forwardMetrics.averageDisplacementMicron
+              << " DOR=" << forwardMetrics.dorPercent << "\n";
   }
 
-  std::cerr << "Evaluating metrics before DOR repair\n";
+  legalizer::PlacementModel reverseModel = baseModel;
+  std::vector<legalizer::Row> reverseRows = baseRows;
+  std::cerr << "Running baseline legalizer (reverse order)\n";
+  status = legalizer::legalizePlacementReverse(&reverseModel, &reverseRows);
+  bool reverseOk = status.ok;
+  std::string reverseError = status.message;
+  legalizer::Metrics reverseMetrics;
+  if (reverseOk) {
+    reverseMetrics = legalizer::evaluateMetrics(reverseModel, alpha, threshold);
+    std::cerr << "Reverse baseline Quality=" << reverseMetrics.quality
+              << " AvgDisp=" << reverseMetrics.averageDisplacementMicron
+              << " DOR=" << reverseMetrics.dorPercent << "\n";
+  }
+
+  if (!forwardOk && !reverseOk) {
+    std::cerr << "error: forward legalization failed: " << forwardError << "\n";
+    std::cerr << "error: reverse legalization failed: " << reverseError << "\n";
+    return 1;
+  }
+  if (!forwardOk || (reverseOk && reverseMetrics.quality < forwardMetrics.quality)) {
+    model = reverseModel;
+    rows = reverseRows;
+    std::cerr << "Selected reverse baseline\n";
+  } else {
+    std::cerr << "Selected forward baseline\n";
+  }
+
   legalizer::Metrics beforeRepair = legalizer::evaluateMetrics(model, alpha, threshold);
   std::cerr << "Running DOR repair\n";
   status = legalizer::runDorRepair(&model, &rows, alpha, threshold);
