@@ -247,15 +247,23 @@ Status legalizePlacement(PlacementModel *model, std::vector<Row> *rows) {
   for (int cellId : cellProcessingOrder(*model)) {
     const Cell &cell = model->cells.at(static_cast<std::size_t>(cellId));
     Candidate best;
+    int inspectedRows = 0;
     for (int rowIdx : rowSearchOrder(model->tech, cell.original.y)) {
       if (rowIdx < 0 || rowIdx >= static_cast<int>(rows->size())) {
         continue;
       }
+      Dbu verticalCost = std::llabs(rowY(model->tech, rowIdx) - cell.original.y);
+      if (best.valid && static_cast<long double>(verticalCost) > best.score) {
+        break;
+      }
       Row &row = rows->at(static_cast<std::size_t>(rowIdx));
+      ++inspectedRows;
+      bool rowHasCapacity = false;
       for (RowInterval &interval : row.intervals) {
         if (interval.occupiedWidth + cell.width > interval.xMax - interval.xMin) {
           continue;
         }
+        rowHasCapacity = true;
         std::vector<int> order = insertionOrderFor(*model, interval, cellId);
         IntervalSolveResult solved = solveIntervalAbacus(*model, interval, order);
         if (!solved.ok) {
@@ -274,6 +282,9 @@ Status legalizePlacement(PlacementModel *model, std::vector<Row> *rows) {
           best.xs = solved.xByOrder;
           best.score = score;
         }
+      }
+      if (best.valid && rowHasCapacity && inspectedRows >= 12) {
+        break;
       }
     }
     if (best.valid) {

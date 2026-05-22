@@ -65,18 +65,22 @@ int main(int argc, char **argv) {
     std::cerr << "error: " << status.message << "\n";
     return 1;
   }
+  std::cerr << "Running baseline legalizer\n";
   status = legalizer::legalizePlacement(&model, &rows);
   if (!status.ok) {
     std::cerr << "error: " << status.message << "\n";
     return 1;
   }
 
+  std::cerr << "Evaluating metrics before DOR repair\n";
   legalizer::Metrics beforeRepair = legalizer::evaluateMetrics(model, alpha, threshold);
+  std::cerr << "Running DOR repair\n";
   status = legalizer::runDorRepair(&model, &rows, alpha, threshold);
   if (!status.ok) {
     std::cerr << "error: " << status.message << "\n";
     return 1;
   }
+  std::cerr << "Evaluating final metrics\n";
   legalizer::Metrics finalMetrics = legalizer::evaluateMetrics(model, alpha, threshold);
   (void)beforeRepair;
 

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <utility>
 
 namespace legalizer {
 namespace {
@@ -21,35 +23,67 @@ std::vector<DensityGridInfo> computeDensityGrids(const PlacementModel &model,
   if (gridSize <= 0) {
     return grids;
   }
-  int index = 0;
-  for (Dbu y = model.tech.die.ly; y < model.tech.die.uy; y += gridSize) {
-    for (Dbu x = model.tech.die.lx; x < model.tech.die.ux; x += gridSize) {
-      Rect grid{x, y, std::min(x + gridSize, model.tech.die.ux),
-                std::min(y + gridSize, model.tech.die.uy)};
-      bool macroCovered = false;
-      for (const Obstacle &obs : model.obstacles) {
-        if (obs.type == ObjectType::Macro && overlaps(grid, obs.rect)) {
-          macroCovered = true;
-          break;
-        }
-      }
-      if (macroCovered) {
+
+  std::map<std::pair<int, int>, long double> occupiedByGrid;
+  for (const Cell &cell : model.cells) {
+    if (!cell.placedValid) {
+      continue;
+    }
+    Rect cellRect = rectForPlacedCell(cell);
+    if (!overlaps(cellRect, model.tech.die)) {
+      continue;
+    }
+    int gxMin = static_cast<int>(floorDiv(cellRect.lx - model.tech.die.lx, gridSize));
+    int gyMin = static_cast<int>(floorDiv(cellRect.ly - model.tech.die.ly, gridSize));
+    int gxMax = static_cast<int>(
+        floorDiv(std::max(cellRect.ux - 1, model.tech.die.lx) - model.tech.die.lx,
+                 gridSize));
+    int gyMax = static_cast<int>(
+        floorDiv(std::max(cellRect.uy - 1, model.tech.die.ly) - model.tech.die.ly,
+                 gridSize));
+    gxMin = std::max(gxMin, 0);
+    gyMin = std::max(gyMin, 0);
+    for (int gy = gyMin; gy <= gyMax; ++gy) {
+      Dbu y = model.tech.die.ly + static_cast<Dbu>(gy) * gridSize;
+      if (y >= model.tech.die.uy) {
         continue;
       }
-      long double occupied = 0.0;
-      for (const Cell &cell : model.cells) {
-        if (!cell.placedValid) {
+      for (int gx = gxMin; gx <= gxMax; ++gx) {
+        Dbu x = model.tech.die.lx + static_cast<Dbu>(gx) * gridSize;
+        if (x >= model.tech.die.ux) {
           continue;
         }
-        occupied += static_cast<long double>(intersectionArea(grid, rectForPlacedCell(cell)));
+        Rect grid{x, y, std::min(x + gridSize, model.tech.die.ux),
+                  std::min(y + gridSize, model.tech.die.uy)};
+        Dbu overlap = intersectionArea(grid, cellRect);
+        if (overlap > 0) {
+          occupiedByGrid[{gx, gy}] += static_cast<long double>(overlap);
+        }
       }
-      if (occupied <= 0.0) {
-        continue;
-      }
-      long double area = static_cast<long double>(rectArea(grid));
-      double density = area > 0.0 ? static_cast<double>(100.0L * occupied / area) : 0.0;
-      grids.push_back(DensityGridInfo{index++, grid, density, density > threshold});
     }
+  }
+
+  int index = 0;
+  for (const auto &entry : occupiedByGrid) {
+    int gx = entry.first.first;
+    int gy = entry.first.second;
+    Dbu x = model.tech.die.lx + static_cast<Dbu>(gx) * gridSize;
+    Dbu y = model.tech.die.ly + static_cast<Dbu>(gy) * gridSize;
+    Rect grid{x, y, std::min(x + gridSize, model.tech.die.ux),
+              std::min(y + gridSize, model.tech.die.uy)};
+    bool macroCovered = false;
+    for (const Obstacle &obs : model.obstacles) {
+      if (obs.type == ObjectType::Macro && overlaps(grid, obs.rect)) {
+        macroCovered = true;
+        break;
+      }
+    }
+    if (macroCovered) {
+      continue;
+    }
+    long double area = static_cast<long double>(rectArea(grid));
+    double density = area > 0.0 ? static_cast<double>(100.0L * entry.second / area) : 0.0;
+    grids.push_back(DensityGridInfo{index++, grid, density, density > threshold});
   }
   return grids;
 }
