@@ -15,6 +15,7 @@ tests/out_*.tcl
 *.tcl.out
 *.log
 *.rpt
+flow_metrics.csv
 *.tmp
 
 # Generated placement/OpenROAD artifacts

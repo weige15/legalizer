@@ -48,6 +48,49 @@ proc flow_run_gp {} {
     return 1
 }
 
+proc flow_metrics_csv {repo_root} {
+    if {[info exists ::env(METRICS_CSV)]} {
+        if {$::env(METRICS_CSV) eq ""} {
+            return ""
+        }
+        if {[file pathtype $::env(METRICS_CSV)] eq "absolute"} {
+            return [file normalize $::env(METRICS_CSV)]
+        }
+        return [file normalize [file join $repo_root $::env(METRICS_CSV)]]
+    }
+    return [file normalize [file join $repo_root flow_metrics.csv]]
+}
+
+proc csv_escape {value} {
+    set text [format "%s" $value]
+    if {[string first "\"" $text] >= 0} {
+        regsub -all {"} $text {""} text
+    }
+    if {[regexp {[,\"\n\r]} $text]} {
+        return "\"$text\""
+    }
+    return $text
+}
+
+proc append_metrics_csv {csv_path row_values} {
+    if {$csv_path eq ""} {
+        return
+    }
+
+    set need_header [expr {![file exists $csv_path] || [file size $csv_path] == 0}]
+    set fp [open $csv_path a]
+    if {$need_header} {
+        puts $fp "case,design,alpha,threshold,movable_cells,average_displacement_u,total_displacement_u,max_displacement_u,total_grids,overflow_grids,dor_percent,quality"
+    }
+
+    set escaped {}
+    foreach value $row_values {
+        lappend escaped [csv_escape $value]
+    }
+    puts $fp [join $escaped ","]
+    close $fp
+}
+
 proc run_parent {repo_root script_path} {
     set single_case [expr {![info exists ::env(CASES)] && [info exists ::env(CASE_NAME)]}]
     if {[info exists ::env(CASES)]} {
@@ -63,8 +106,19 @@ proc run_parent {repo_root script_path} {
         flow_fail "make failed: $result"
     }
 
+    set metrics_csv [flow_metrics_csv $repo_root]
+    if {$metrics_csv ne ""} {
+        set fp [open $metrics_csv w]
+        puts $fp "case,design,alpha,threshold,movable_cells,average_displacement_u,total_displacement_u,max_displacement_u,total_grids,overflow_grids,dor_percent,quality"
+        close $fp
+        puts "Metrics CSV: $metrics_csv"
+    }
+
     if {$single_case} {
         set ::env(CASE_NAME) [normalize_case_path $repo_root $::env(CASE_NAME)]
+        if {$metrics_csv ne ""} {
+            set ::env(METRICS_CSV) $metrics_csv
+        }
         puts ""
         puts "============================================================"
         puts "Running public case: $::env(CASE_NAME)"
@@ -87,6 +141,7 @@ proc run_parent {repo_root script_path} {
 
         set cmd [list env FLOW_CHILD=1 CASE_NAME=$case_path ALPHA=[flow_alpha] \
                       THRESHOLD=[flow_threshold] RUN_GP=[flow_run_gp] \
+                      METRICS_CSV=$metrics_csv \
                       $openroad_bin -exit $script_path]
         if {[catch {exec {*}$cmd >@ stdout 2>@ stderr} result]} {
             flow_fail "case failed: $case_path\n$result"
@@ -414,6 +469,25 @@ proc run_child {repo_root} {
         puts "Heatmap CSV            : [dict get $dor_info heat_name]"
     }
     puts "----------------------------------------"
+
+    set metrics_csv [flow_metrics_csv $repo_root]
+    append_metrics_csv $metrics_csv [list \
+        $caseName \
+        $design_name \
+        $alpha \
+        $threshold \
+        [dict get $disp count] \
+        [format "%.6f" $avg_u] \
+        [format "%.6f" [dict get $disp total_u]] \
+        [format "%.6f" [dict get $disp max_u]] \
+        [dict get $dor_info total_grids] \
+        [dict get $dor_info overflow_grids] \
+        [format "%.6f" $dor] \
+        [format "%.6f" $quality]]
+    if {$metrics_csv ne ""} {
+        puts "Metrics CSV            : $metrics_csv"
+        puts "Markdown row           : | $design_name | $alpha | $threshold | [format "%.3f" $avg_u] | [format "%.2f" $dor]% | [format "%.4f" $quality] |"
+    }
 }
 
 if {[info exists ::env(FLOW_CHILD)] && $::env(FLOW_CHILD) eq "1"} {

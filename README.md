@@ -61,6 +61,17 @@ rejects output containing `detailed_placement`, and then sources the generated
 placement commands. Build, invocation, output, and source failures are reported
 with explicit diagnostics.
 
+After each successful case, the flow reports average displacement, DOR, and the
+weighted quality score used by the assignment:
+
+```text
+Quality = alpha * average_displacement + (1 - alpha) * DOR
+```
+
+The same metrics are also written to `flow_metrics.csv` in the repository root.
+Set `METRICS_CSV=path/to/file.csv` to choose another file, or `METRICS_CSV=` to
+disable CSV output.
+
 ## Clean
 
 ```sh
