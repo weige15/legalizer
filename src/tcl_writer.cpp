@@ -33,6 +33,26 @@ std::string tclBraceWord(const std::string &text) {
   return quoted;
 }
 
+Point placeOriginForCell(const Cell &cell) {
+  Point origin = cell.placed;
+  if (cell.orient == "MX" || cell.orient == "FS") {
+    origin.y += cell.height;
+  } else if (cell.orient == "MY" || cell.orient == "FN") {
+    origin.x += cell.width;
+  } else if (cell.orient == "R180" || cell.orient == "S") {
+    origin.x += cell.width;
+    origin.y += cell.height;
+  } else if (cell.orient == "R90" || cell.orient == "E") {
+    origin.x += cell.height;
+  } else if (cell.orient == "R270" || cell.orient == "W") {
+    origin.y += cell.width;
+  } else if (cell.orient == "MXR90" || cell.orient == "FE") {
+    origin.x += cell.height;
+    origin.y += cell.width;
+  }
+  return origin;
+}
+
 }  // namespace
 
 Status writeTcl(const PlacementModel &model, const std::string &outputPath) {
@@ -47,10 +67,11 @@ Status writeTcl(const PlacementModel &model, const std::string &outputPath) {
       if (!cell.placedValid) {
         continue;
       }
+      Point origin = placeOriginForCell(cell);
       out << "place_cell -inst_name " << tclBraceWord(cell.name) << " -orient "
           << tclBraceWord(cell.orient) << " -origin {"
-          << dbuToMicron(model.tech, cell.placed.x) << " "
-          << dbuToMicron(model.tech, cell.placed.y) << "}\n";
+          << dbuToMicron(model.tech, origin.x) << " "
+          << dbuToMicron(model.tech, origin.y) << "}\n";
     }
     out.flush();
     if (!out) {
