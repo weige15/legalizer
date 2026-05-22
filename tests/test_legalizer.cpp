@@ -152,6 +152,17 @@ void testAbacusAndTetris() {
   solved = solveIntervalAbacus(model, RowInterval{0, 0, 0, 0, 1500, 0, {}}, {0, 1});
   expectTrue(!solved.ok, "over-capacity interval should fail");
 
+  PlacementModel clusterModel = smallModel();
+  clusterModel.cells.push_back(makeCell("c0", Point{0, 0}, 1000, 1000, "R0"));
+  clusterModel.cells.push_back(makeCell("c1", Point{1900, 0}, 1000, 1000, "R0"));
+  clusterModel.cells.push_back(makeCell("c2", Point{1900, 0}, 1000, 1000, "R0"));
+  solved = solveIntervalAbacus(clusterModel, RowInterval{0, 0, 0, 0, 3500, 0, {}},
+                               {0, 1, 2});
+  expectTrue(solved.ok, solved.message);
+  expectEq(solved.xByOrder[0], static_cast<Dbu>(0), "cluster first x");
+  expectEq(solved.xByOrder[1], static_cast<Dbu>(1400), "cluster second x");
+  expectEq(solved.xByOrder[2], static_cast<Dbu>(2400), "cluster third x");
+
   std::vector<Row> rows;
   Status status = buildRowIntervals(model, &rows);
   expectTrue(status.ok, status.message);
@@ -206,6 +217,31 @@ void testMetricsAndWriter() {
              "writer must not emit detailed_placement");
 }
 
+void testDorRepairMovesOverflowContributor() {
+  PlacementModel model;
+  model.tech.dbuPerMicron = 1000;
+  model.tech.die = Rect{0, 0, 21000, 1000};
+  model.tech.siteWidth = 1000;
+  model.tech.siteHeight = 1000;
+  model.obstacles.push_back(
+      Obstacle{"b0", Rect{10000, 0, 11000, 1000}, ObjectType::Blockage, ""});
+  model.cells.push_back(makeCell("a", Point{0, 0}, 5000, 1000, "R0"));
+  model.cells.push_back(makeCell("b", Point{0, 0}, 5000, 1000, "R0"));
+
+  std::vector<Row> rows;
+  expectTrue(buildRowIntervals(model, &rows).ok, "row build failed");
+  expectTrue(legalizePlacement(&model, &rows).ok, "baseline legalization failed");
+  Metrics before = evaluateMetrics(model, 0.0, 75.0);
+  expectEq(before.overflowGrids, 1, "baseline overflow count");
+
+  Status status = runDorRepair(&model, &rows, 0.0, 75.0);
+  expectTrue(status.ok, status.message);
+  std::vector<std::string> diagnostics = validateLegality(model, rows);
+  expectEq(diagnostics.size(), static_cast<std::size_t>(0), "repair legality");
+  Metrics after = evaluateMetrics(model, 0.0, 75.0);
+  expectEq(after.overflowGrids, 0, "repaired overflow count");
+}
+
 void testUnsupportedCells() {
   PlacementModel model = smallModel();
   model.cells.push_back(makeCell("tall", Point{0, 0}, 100, 2000, "R0"));
@@ -223,6 +259,7 @@ int main() {
   run("AbacusAndTetris", testAbacusAndTetris);
   run("BaselineAndValidator", testBaselineAndValidator);
   run("MetricsAndWriter", testMetricsAndWriter);
+  run("DorRepair", testDorRepairMovesOverflowContributor);
   run("UnsupportedCells", testUnsupportedCells);
 
   if (failures != 0) {

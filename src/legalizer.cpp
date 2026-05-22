@@ -1,6 +1,7 @@
 #include "legalizer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <set>
 #include <tuple>
@@ -15,6 +16,17 @@ struct Candidate {
   std::vector<int> order;
   std::vector<Dbu> xs;
   long double score = 0.0;
+};
+
+struct Cluster {
+  int start = 0;
+  int end = 0;
+  long double targetSum = 0.0;
+  int weight = 0;
+
+  long double target() const {
+    return weight > 0 ? targetSum / static_cast<long double>(weight) : 0.0;
+  }
 };
 
 Dbu totalWidth(const PlacementModel &model, const std::vector<int> &ids) {
@@ -48,6 +60,16 @@ long double placementCost(const PlacementModel &model, const RowInterval &interv
     cost += std::llabs(interval.y - cell.original.y);
   }
   return cost;
+}
+
+long double currentIntervalCost(const PlacementModel &model,
+                                const RowInterval &interval) {
+  std::vector<Dbu> xs;
+  xs.reserve(interval.cellIds.size());
+  for (int cellId : interval.cellIds) {
+    xs.push_back(model.cells.at(static_cast<std::size_t>(cellId)).placed.x);
+  }
+  return placementCost(model, interval, interval.cellIds, xs);
 }
 
 long double intersectionArea(const Rect &a, const Rect &b) {
@@ -116,6 +138,20 @@ bool betterGap(const GapChoice &a, const GapChoice &b) {
   return a.x < b.x;
 }
 
+Dbu clampClusterOrigin(const Tech &tech, long double target, Dbu minX, Dbu maxX) {
+  if (maxX < minX) {
+    return minX;
+  }
+  long double rounded = std::round(target);
+  if (rounded < static_cast<long double>(std::numeric_limits<Dbu>::min())) {
+    return snapUpToSite(tech, minX);
+  }
+  if (rounded > static_cast<long double>(std::numeric_limits<Dbu>::max())) {
+    return snapDownToSite(tech, maxX);
+  }
+  return clampSiteOrigin(tech, static_cast<Dbu>(rounded), minX, maxX);
+}
+
 }  // namespace
 
 IntervalSolveResult solveIntervalAbacus(const PlacementModel &model,
@@ -133,33 +169,75 @@ IntervalSolveResult solveIntervalAbacus(const PlacementModel &model,
     return IntervalSolveResult{false, "cell width exceeds interval capacity", {}, 0.0};
   }
 
-  std::vector<Dbu> suffix(orderedCellIds.size() + 1, 0);
-  for (int i = static_cast<int>(orderedCellIds.size()) - 1; i >= 0; --i) {
-    suffix[static_cast<std::size_t>(i)] =
-        suffix[static_cast<std::size_t>(i + 1)] +
-        model.cells.at(static_cast<std::size_t>(orderedCellIds[static_cast<std::size_t>(i)])).width;
+  std::vector<Dbu> prefix(orderedCellIds.size(), 0);
+  Dbu runningWidth = 0;
+  for (std::size_t i = 0; i < orderedCellIds.size(); ++i) {
+    prefix[i] = runningWidth;
+    runningWidth +=
+        model.cells.at(static_cast<std::size_t>(orderedCellIds[i])).width;
   }
 
-  Dbu prevEnd = interval.xMin;
+  const Dbu minClusterX = interval.xMin;
+  const Dbu maxClusterX = interval.xMax - runningWidth;
+  if (maxClusterX < minClusterX) {
+    return IntervalSolveResult{false, "cell width exceeds interval capacity", {}, 0.0};
+  }
+
+  std::vector<Cluster> clusters;
+  clusters.reserve(orderedCellIds.size());
   for (std::size_t i = 0; i < orderedCellIds.size(); ++i) {
     const Cell &cell = model.cells.at(static_cast<std::size_t>(orderedCellIds[i]));
-    Dbu minX = prevEnd;
-    Dbu maxX = interval.xMax - suffix[i];
-    Dbu x = clampSiteOrigin(model.tech, cell.original.x, minX, maxX);
-    if (x < minX) {
-      x = snapUpToSite(model.tech, minX);
+    long double target = static_cast<long double>(cell.original.x) -
+                         static_cast<long double>(prefix[i]);
+    clusters.push_back(Cluster{static_cast<int>(i), static_cast<int>(i), target, 1});
+    while (clusters.size() >= 2 &&
+           clusters[clusters.size() - 2].target() > clusters.back().target()) {
+      Cluster merged = clusters[clusters.size() - 2];
+      const Cluster &last = clusters.back();
+      merged.end = last.end;
+      merged.targetSum += last.targetSum;
+      merged.weight += last.weight;
+      clusters.pop_back();
+      clusters.back() = merged;
     }
-    if (x > maxX) {
-      x = snapDownToSite(model.tech, maxX);
+  }
+
+  Dbu previousZ = minClusterX;
+  for (const Cluster &cluster : clusters) {
+    Dbu z = clampClusterOrigin(model.tech, cluster.target(), minClusterX, maxClusterX);
+    if (z < previousZ) {
+      z = snapUpToSite(model.tech, previousZ);
     }
-    if (x < minX || x > maxX || !isSiteAligned(model.tech, x)) {
+    if (z > maxClusterX) {
+      z = snapDownToSite(model.tech, maxClusterX);
+    }
+    if (z < previousZ || z < minClusterX || z > maxClusterX ||
+        !isSiteAligned(model.tech, z)) {
+      return IntervalSolveResult{false, "cluster snapping failed inside interval", {}, 0.0};
+    }
+    for (int i = cluster.start; i <= cluster.end; ++i) {
+      result.xByOrder[static_cast<std::size_t>(i)] =
+          z + prefix[static_cast<std::size_t>(i)];
+    }
+    previousZ = z;
+  }
+
+  for (std::size_t i = 0; i < orderedCellIds.size(); ++i) {
+    const Cell &cell = model.cells.at(static_cast<std::size_t>(orderedCellIds[i]));
+    Dbu x = result.xByOrder[i];
+    if (!isSiteAligned(model.tech, x)) {
       return IntervalSolveResult{false, "site snapping failed inside interval", {}, 0.0};
     }
-    result.xByOrder[i] = x;
-    prevEnd = x + cell.width;
-  }
-  if (prevEnd > interval.xMax) {
-    return IntervalSolveResult{false, "expanded cells overflow interval", {}, 0.0};
+    if (x < interval.xMin || x + cell.width > interval.xMax) {
+      return IntervalSolveResult{false, "expanded cells overflow interval", {}, 0.0};
+    }
+    if (i > 0) {
+      const Cell &prev =
+          model.cells.at(static_cast<std::size_t>(orderedCellIds[i - 1]));
+      if (result.xByOrder[i - 1] + prev.width > x) {
+        return IntervalSolveResult{false, "expanded cells overlap", {}, 0.0};
+      }
+    }
   }
   result.cost = placementCost(model, interval, orderedCellIds, result.xByOrder);
   return result;
@@ -183,7 +261,7 @@ Status legalizePlacement(PlacementModel *model, std::vector<Row> *rows) {
         if (!solved.ok) {
           continue;
         }
-        long double score = solved.cost;
+        long double score = solved.cost - currentIntervalCost(*model, interval);
         bool better = !best.valid || score < best.score ||
                       (score == best.score &&
                        std::tie(rowIdx, interval.intervalIndex) <
@@ -339,19 +417,64 @@ Status runDorRepair(PlacementModel *model, std::vector<Row> *rows, double alpha,
           }
         }
         trialModel.cells.at(static_cast<std::size_t>(cellId)).placedValid = false;
-        Status moved = tetrisPlaceCell(&trialModel, &trialRows, cellId);
-        if (!moved.ok) {
-          continue;
+
+        PlacementModel bestModel;
+        std::vector<Row> bestRows;
+        Metrics bestMetrics = current;
+        bool foundBetter = false;
+        const int maxCandidateRows = 12;
+        const int maxCandidatePlacements = 12;
+        int inspectedRows = 0;
+        int inspectedPlacements = 0;
+        const Cell &cell = trialModel.cells.at(static_cast<std::size_t>(cellId));
+        for (int rowIdx : rowSearchOrder(trialModel.tech, cell.original.y)) {
+          if (inspectedRows++ >= maxCandidateRows ||
+              inspectedPlacements >= maxCandidatePlacements) {
+            break;
+          }
+          if (rowIdx < 0 || rowIdx >= static_cast<int>(trialRows.size())) {
+            continue;
+          }
+          const Row &row = trialRows.at(static_cast<std::size_t>(rowIdx));
+          for (const RowInterval &interval : row.intervals) {
+            if (inspectedPlacements >= maxCandidatePlacements) {
+              break;
+            }
+            if (interval.occupiedWidth + cell.width > interval.xMax - interval.xMin) {
+              continue;
+            }
+            ++inspectedPlacements;
+            PlacementModel candidateModel = trialModel;
+            std::vector<Row> candidateRows = trialRows;
+            RowInterval &candidateInterval =
+                candidateRows.at(static_cast<std::size_t>(rowIdx))
+                    .intervals.at(static_cast<std::size_t>(interval.intervalIndex));
+            std::vector<int> order =
+                insertionOrderFor(candidateModel, candidateInterval, cellId);
+            IntervalSolveResult solved =
+                solveIntervalAbacus(candidateModel, candidateInterval, order);
+            if (!solved.ok) {
+              continue;
+            }
+            commitInterval(&candidateModel, &candidateInterval, order, solved.xByOrder);
+            diagnostics = validateLegality(candidateModel, candidateRows);
+            if (!diagnostics.empty()) {
+              continue;
+            }
+            Metrics candidate = evaluateMetrics(candidateModel, alpha, threshold);
+            if (candidate.quality + epsilon < bestMetrics.quality) {
+              bestModel = candidateModel;
+              bestRows = candidateRows;
+              bestMetrics = candidate;
+              foundBetter = true;
+            }
+          }
         }
-        diagnostics = validateLegality(trialModel, trialRows);
-        if (!diagnostics.empty()) {
-          continue;
-        }
-        Metrics candidate = evaluateMetrics(trialModel, alpha, threshold);
-        if (candidate.quality + epsilon < current.quality) {
-          *model = trialModel;
-          *rows = trialRows;
-          current = candidate;
+
+        if (foundBetter) {
+          *model = bestModel;
+          *rows = bestRows;
+          current = bestMetrics;
           accepted = true;
           break;
         }
