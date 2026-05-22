@@ -208,29 +208,60 @@ proc fallback_report_dor {block threshold} {
     set total_grids 0
     set overflow_grids 0
 
-    for {set y $die_ly} {$y < $die_uy} {set y [expr {$y + $grid_size}]} {
-        set grid_uy [expr {min($y + $grid_size, $die_uy)}]
-        for {set x $die_lx} {$x < $die_ux} {set x [expr {$x + $grid_size}]} {
-            set grid_ux [expr {min($x + $grid_size, $die_ux)}]
-            set area [expr {($grid_ux - $x) * ($grid_uy - $y)}]
-            if {$area <= 0} {
+    array unset occupied_by_grid
+    foreach inst [movable_insts $block] {
+        set bbox [$inst getBBox]
+        set bx_min [$bbox xMin]
+        set by_min [$bbox yMin]
+        set bx_max [$bbox xMax]
+        set by_max [$bbox yMax]
+        set gx_min [expr {int(floor(($bx_min - $die_lx) / double($grid_size)))}]
+        set gx_max [expr {int(floor((max($bx_max - 1, $die_lx) - $die_lx) / double($grid_size)))}]
+        set gy_min [expr {int(floor(($by_min - $die_ly) / double($grid_size)))}]
+        set gy_max [expr {int(floor((max($by_max - 1, $die_ly) - $die_ly) / double($grid_size)))}]
+        if {$gx_min < 0} { set gx_min 0 }
+        if {$gy_min < 0} { set gy_min 0 }
+        for {set gy $gy_min} {$gy <= $gy_max} {incr gy} {
+            set grid_y [expr {$die_ly + $gy * $grid_size}]
+            if {$grid_y >= $die_uy} {
                 continue
             }
-            set occupied 0
-            foreach inst [movable_insts $block] {
-                set bbox [$inst getBBox]
-                set occupied [expr {$occupied + [intersection_area \
-                    $x $y $grid_ux $grid_uy \
-                    [$bbox xMin] [$bbox yMin] [$bbox xMax] [$bbox yMax]]}]
+            set grid_uy [expr {min($grid_y + $grid_size, $die_uy)}]
+            for {set gx $gx_min} {$gx <= $gx_max} {incr gx} {
+                set grid_x [expr {$die_lx + $gx * $grid_size}]
+                if {$grid_x >= $die_ux} {
+                    continue
+                }
+                set grid_ux [expr {min($grid_x + $grid_size, $die_ux)}]
+                set overlap [intersection_area \
+                    $grid_x $grid_y $grid_ux $grid_uy \
+                    $bx_min $by_min $bx_max $by_max]
+                if {$overlap <= 0} {
+                    continue
+                }
+                set key "$gx,$gy"
+                if {![info exists occupied_by_grid($key)]} {
+                    set occupied_by_grid($key) 0
+                }
+                set occupied_by_grid($key) [expr {$occupied_by_grid($key) + $overlap}]
             }
-            if {$occupied <= 0} {
-                continue
-            }
-            set density [expr {100.0 * $occupied / double($area)}]
-            incr total_grids
-            if {$density > $threshold} {
-                incr overflow_grids
-            }
+        }
+    }
+
+    foreach key [array names occupied_by_grid] {
+        scan $key "%d,%d" gx gy
+        set grid_x [expr {$die_lx + $gx * $grid_size}]
+        set grid_y [expr {$die_ly + $gy * $grid_size}]
+        set grid_ux [expr {min($grid_x + $grid_size, $die_ux)}]
+        set grid_uy [expr {min($grid_y + $grid_size, $die_uy)}]
+        set area [expr {($grid_ux - $grid_x) * ($grid_uy - $grid_y)}]
+        if {$area <= 0} {
+            continue
+        }
+        set density [expr {100.0 * $occupied_by_grid($key) / double($area)}]
+        incr total_grids
+        if {$density > $threshold} {
+            incr overflow_grids
         }
     }
 
