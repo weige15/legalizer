@@ -190,7 +190,7 @@ void testMetricsAndWriter() {
   model.tech.siteHeight = 10;
   model.cells.push_back(makeCell("a[0]", Point{0, 0}, 10, 10, "MX", true, Point{0, 0}));
   Metrics metrics = evaluateMetrics(model, 0.5, 100.0);
-  expectEq(metrics.totalGrids, 2, "grid count");
+  expectEq(metrics.totalGrids, 1, "occupied grid count");
   expectEq(metrics.overflowGrids, 0, "threshold equality is not overflow");
   metrics = evaluateMetrics(model, 0.0, 45.0);
   expectEq(metrics.overflowGrids, 1, "one overflow grid");

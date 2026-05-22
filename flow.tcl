@@ -223,6 +223,9 @@ proc fallback_report_dor {block threshold} {
                     $x $y $grid_ux $grid_uy \
                     [$bbox xMin] [$bbox yMin] [$bbox xMax] [$bbox yMax]]}]
             }
+            if {$occupied <= 0} {
+                continue
+            }
             set density [expr {100.0 * $occupied / double($area)}]
             incr total_grids
             if {$density > $threshold} {

@@ -43,6 +43,9 @@ std::vector<DensityGridInfo> computeDensityGrids(const PlacementModel &model,
         }
         occupied += static_cast<long double>(intersectionArea(grid, rectForPlacedCell(cell)));
       }
+      if (occupied <= 0.0) {
+        continue;
+      }
       long double area = static_cast<long double>(rectArea(grid));
       double density = area > 0.0 ? static_cast<double>(100.0L * occupied / area) : 0.0;
       grids.push_back(DensityGridInfo{index++, grid, density, density > threshold});
