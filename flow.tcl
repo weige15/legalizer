@@ -186,14 +186,69 @@ proc remove_macros_for_heatmap {block} {
     return $removed
 }
 
-proc report_dor {case_name design_name threshold} {
+proc intersection_area {a_lx a_ly a_ux a_uy b_lx b_ly b_ux b_uy} {
+    set lx [expr {max($a_lx, $b_lx)}]
+    set ly [expr {max($a_ly, $b_ly)}]
+    set ux [expr {min($a_ux, $b_ux)}]
+    set uy [expr {min($a_uy, $b_uy)}]
+    if {$ux <= $lx || $uy <= $ly} {
+        return 0
+    }
+    return [expr {($ux - $lx) * ($uy - $ly)}]
+}
+
+proc fallback_report_dor {block threshold} {
+    set dbu_val [$block getDbUnitsPerMicron]
+    set grid_size [expr {10 * $dbu_val}]
+    set die [$block getDieArea]
+    set die_lx [$die xMin]
+    set die_ly [$die yMin]
+    set die_ux [$die xMax]
+    set die_uy [$die yMax]
+    set total_grids 0
+    set overflow_grids 0
+
+    for {set y $die_ly} {$y < $die_uy} {set y [expr {$y + $grid_size}]} {
+        set grid_uy [expr {min($y + $grid_size, $die_uy)}]
+        for {set x $die_lx} {$x < $die_ux} {set x [expr {$x + $grid_size}]} {
+            set grid_ux [expr {min($x + $grid_size, $die_ux)}]
+            set area [expr {($grid_ux - $x) * ($grid_uy - $y)}]
+            if {$area <= 0} {
+                continue
+            }
+            set occupied 0
+            foreach inst [movable_insts $block] {
+                set bbox [$inst getBBox]
+                set occupied [expr {$occupied + [intersection_area \
+                    $x $y $grid_ux $grid_uy \
+                    [$bbox xMin] [$bbox yMin] [$bbox xMax] [$bbox yMax]]}]
+            }
+            set density [expr {100.0 * $occupied / double($area)}]
+            incr total_grids
+            if {$density > $threshold} {
+                incr overflow_grids
+            }
+        }
+    }
+
+    if {$total_grids > 0} {
+        set dor [expr {($overflow_grids / double($total_grids)) * 100.0}]
+    } else {
+        set dor 0.0
+    }
+    return [dict create total_grids $total_grids overflow_grids $overflow_grids \
+                 dor $dor heat_name ""]
+}
+
+proc report_dor {block case_name design_name threshold} {
     set heat_name [file join $case_name "${design_name}_heat.csv"]
     if {[catch {gui::set_heatmap "Placement" rebuild} result]} {
         puts "WARNING: could not rebuild OpenROAD placement heatmap: $result"
     }
     if {[catch {gui::dump_heatmap "Placement" $heat_name} result]} {
         puts "WARNING: could not dump OpenROAD placement heatmap: $result"
-        return [dict create total_grids 0 overflow_grids 0 dor 0.0 heat_name ""]
+        puts "Using Tcl bbox-based DOR fallback"
+        return [fallback_report_dor $block $threshold]
     }
 
     set total_grids 0
@@ -212,11 +267,12 @@ proc report_dor {case_name design_name threshold} {
     }
     close $fp
 
-    if {$total_grids > 0} {
-        set dor [expr {($overflow_grids / double($total_grids)) * 100.0}]
-    } else {
-        set dor 0.0
+    if {$total_grids == 0} {
+        puts "WARNING: OpenROAD heatmap CSV contained no grids"
+        puts "Using Tcl bbox-based DOR fallback"
+        return [fallback_report_dor $block $threshold]
     }
+    set dor [expr {($overflow_grids / double($total_grids)) * 100.0}]
     return [dict create total_grids $total_grids overflow_grids $overflow_grids \
                  dor $dor heat_name $heat_name]
 }
@@ -299,7 +355,7 @@ proc run_child {repo_root} {
     set disp [report_displacement $block inst_locs]
     set removed [remove_macros_for_heatmap $block]
     puts "Removed $removed macro instance(s) before heatmap DOR reporting"
-    set dor_info [report_dor $caseName $design_name $threshold]
+    set dor_info [report_dor $block $caseName $design_name $threshold]
 
     set avg_u [dict get $disp avg_u]
     set dor [dict get $dor_info dor]
