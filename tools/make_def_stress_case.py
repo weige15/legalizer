@@ -298,18 +298,23 @@ def validate_synthetic_args(cells: int, macros: int, blockages: int, allow_over_
 
 def synthetic_dimensions(
     lef: LefInfo,
-    cells: int,
+    movable_area_dbu: int,
+    fixed_area_dbu: int,
+    min_width_dbu: int,
+    min_height_dbu: int,
     utilization: float,
-    rng: random.Random,
-) -> tuple[int, int, int]:
+) -> tuple[int, int]:
     if utilization <= 0 or utilization >= 1:
         raise RuntimeError("--utilization must be between 0 and 1")
-    sample = [rng.choice(lef.core_masters) for _ in range(min(cells, 1000))]
-    avg_width = sum(master.width_dbu for master in sample) / len(sample)
-    total_sites = math.ceil((cells * avg_width / lef.site_width_dbu) / utilization)
-    row_count = max(20, math.ceil(math.sqrt(total_sites / 1.8)))
-    row_sites = max(50, math.ceil(total_sites / row_count))
-    return row_count, row_sites, total_sites
+    target_core_area = fixed_area_dbu + math.ceil(movable_area_dbu / utilization)
+    total_sites = math.ceil(target_core_area / (lef.site_width_dbu * lef.site_height_dbu))
+    min_rows = max(20, math.ceil(min_height_dbu / lef.site_height_dbu))
+    min_sites = max(50, math.ceil(min_width_dbu / lef.site_width_dbu))
+    row_count = max(min_rows, math.ceil(math.sqrt(total_sites)))
+    row_sites = max(min_sites, math.ceil(total_sites / row_count))
+    if row_count * row_sites < total_sites:
+        row_sites = math.ceil(total_sites / row_count)
+    return row_count, row_sites
 
 
 def write_synthetic_def(
@@ -323,7 +328,6 @@ def write_synthetic_def(
     seed: int,
 ) -> Path:
     rng = random.Random(seed)
-    row_count, row_sites, _ = synthetic_dimensions(lef, cells, utilization, rng)
     macro_masters = lef.block_masters[:macros]
     effective_macros = len(macro_masters)
     if effective_macros < macros:
@@ -332,11 +336,25 @@ def write_synthetic_def(
             f"{effective_macros} macros and {blockages} blockages",
             file=sys.stderr,
         )
-    if macro_masters:
-        min_macro_width = max(master.width_dbu for master in macro_masters) + lef.site_width_dbu * 20
-        min_macro_height = max(master.height_dbu for master in macro_masters) + lef.site_height_dbu * 20
-        row_sites = max(row_sites, math.ceil(min_macro_width / lef.site_width_dbu))
-        row_count = max(row_count, math.ceil(min_macro_height / lef.site_height_dbu))
+    cell_masters = [rng.choice(lef.core_masters) for _ in range(cells)]
+    movable_area_dbu = sum(master.width_dbu * master.height_dbu for master in cell_masters)
+    fixed_area_dbu = sum(master.width_dbu * master.height_dbu for master in macro_masters)
+    macro_gap = lef.site_height_dbu * 10
+    min_macro_width = (
+        max((master.width_dbu for master in macro_masters), default=0) + lef.site_width_dbu * 40
+    )
+    min_macro_height = (
+        sum(master.height_dbu for master in macro_masters)
+        + macro_gap * (len(macro_masters) + 1)
+    )
+    row_count, row_sites = synthetic_dimensions(
+        lef,
+        movable_area_dbu,
+        fixed_area_dbu,
+        min_macro_width,
+        min_macro_height,
+        utilization,
+    )
 
     die_ux = row_sites * lef.site_width_dbu
     die_uy = row_count * lef.site_height_dbu
@@ -362,15 +380,16 @@ def write_synthetic_def(
         )
 
     lines.extend(["\n", f"COMPONENTS {cells + effective_macros} ;\n"])
+    macro_y = macro_gap
     for index, master in enumerate(macro_masters):
-        x = ((index + 1) * die_ux) // (effective_macros + 1) - master.width_dbu // 2
-        y = ((index % 3) + 1) * die_uy // 5
+        x = (die_ux - master.width_dbu) // 2
+        y = macro_y
         x = max(0, min(x, die_ux - master.width_dbu))
         y = max(0, min(y, die_uy - master.height_dbu))
         lines.append(f"- macro_{index} {master.name} + FIXED ( {x} {y} ) N ;\n")
+        macro_y = y + master.height_dbu + macro_gap
 
-    for index in range(cells):
-        master = rng.choice(lef.core_masters)
+    for index, master in enumerate(cell_masters):
         row = index % cluster_rows
         site = (index * 3 + rng.randrange(cluster_sites)) % cluster_sites
         x = site * lef.site_width_dbu
