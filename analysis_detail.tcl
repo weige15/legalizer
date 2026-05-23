@@ -2,6 +2,7 @@
 #
 # Usage:
 #   CASE_NAME=ispd19_sample openroad -exit analysis_detail.tcl
+#   RUN_GP=0 CASE_NAME=generated/ispd15_mgc_matrix_mult_a_cluster openroad -exit analysis_detail.tcl
 #
 # This script is for comparison only. Do not use it as Legalizer output.
 
@@ -34,6 +35,13 @@ proc analysis_threshold {} {
         return $::env(THRESHOLD)
     }
     return 45
+}
+
+proc analysis_run_gp {} {
+    if {[info exists ::env(RUN_GP)]} {
+        return $::env(RUN_GP)
+    }
+    return 1
 }
 
 proc load_case {case_name} {
@@ -278,10 +286,16 @@ set ::chip $chip
 set ::block $block
 set ::design_name $design_name
 
-puts "Running global_placement -density 0.95"
-global_placement -density 0.95
-record_locations $block gp_locs
-extract_gp $repo_root $caseName $design_name "after_global"
+if {[analysis_run_gp]} {
+    puts "Running global_placement -density 0.95"
+    global_placement -density 0.95
+    record_locations $block gp_locs
+    extract_gp $repo_root $caseName $design_name "after_global"
+} else {
+    puts "Skipping global_placement because RUN_GP=0"
+    record_locations $block gp_locs
+    extract_gp $repo_root $caseName $design_name "after_input"
+}
 
 puts "Running detailed_placement for analysis baseline"
 detailed_placement
