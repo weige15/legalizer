@@ -29,6 +29,7 @@ flow_metrics.csv
 results/
 reports/
 logs/
+generated/
 
 # Editor and OS files
 .vscode/
