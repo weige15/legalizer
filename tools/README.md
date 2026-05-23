@@ -23,8 +23,14 @@ The script enforces the TA discussion limits by default:
 - `CELL <= 150000`
 - `MACRO + BLOCKAGE <= 10`
 
-Use `RUN_GP=0` when running `flow.tcl` on these generated cases so OpenROAD
-does not replace the clustered starting placement before extraction:
+Run the normal flow to exercise OpenROAD global placement plus the legalizer:
+
+```sh
+CASE_NAME=generated/medium_50k openroad -exit flow.tcl
+```
+
+Use `RUN_GP=0` only when you intentionally want to preserve the clustered
+starting placement and stress the legalizer without global placement:
 
 ```sh
 CASE_NAME=generated/medium_50k RUN_GP=0 openroad -exit flow.tcl

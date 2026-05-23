@@ -39,6 +39,7 @@ INLINE_COMPONENT_RE = re.compile(
 LEF_UNITS_RE = re.compile(r"DATABASE\s+MICRONS\s+(\d+)\s*;", re.IGNORECASE)
 LEF_SITE_RE = re.compile(r"^SITE\s+(\S+)", re.IGNORECASE)
 LEF_MACRO_RE = re.compile(r"^MACRO\s+(\S+)", re.IGNORECASE)
+LEF_PIN_RE = re.compile(r"^PIN\s+(\S+)", re.IGNORECASE)
 LEF_CLASS_RE = re.compile(r"CLASS\s+(\S+)\s*;", re.IGNORECASE)
 LEF_SIZE_RE = re.compile(r"SIZE\s+([0-9.]+)\s+BY\s+([0-9.]+)\s*;", re.IGNORECASE)
 
@@ -49,6 +50,7 @@ class LefMaster:
     cls: str
     width_dbu: int
     height_dbu: int
+    pins: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.70,
         help="Approximate legal placement utilization for synthetic mode, default: 0.70",
+    )
+    parser.add_argument(
+        "--nets",
+        type=int,
+        default=0,
+        help="Number of synthetic 2-pin nets; 0 means one net per CELL, default: 0",
     )
     parser.add_argument(
         "--design-name",
@@ -206,6 +214,7 @@ def parse_lef_info(lef_paths: list[Path]) -> LefInfo:
         current_name = None
         current_class = ""
         current_size = None
+        current_pins = []
         in_site = False
         site_candidate = None
 
@@ -234,9 +243,15 @@ def parse_lef_info(lef_paths: list[Path]) -> LefInfo:
                 current_name = macro_match.group(1)
                 current_class = ""
                 current_size = None
+                current_pins = []
                 continue
             if current_name is None:
                 continue
+            pin_match = LEF_PIN_RE.match(line)
+            if pin_match:
+                pin_name = pin_match.group(1)
+                if pin_name.upper() not in {"VDD", "VSS", "VCC", "GND"}:
+                    current_pins.append(pin_name)
             class_match = LEF_CLASS_RE.search(line)
             if class_match:
                 current_class = class_match.group(1).upper()
@@ -253,6 +268,7 @@ def parse_lef_info(lef_paths: list[Path]) -> LefInfo:
                             current_class,
                             max(1, round(current_size[0] * dbu_per_micron)),
                             max(1, round(current_size[1] * dbu_per_micron)),
+                            tuple(current_pins),
                         )
                     )
                 current_name = None
@@ -282,18 +298,31 @@ def parse_lef_info(lef_paths: list[Path]) -> LefInfo:
     )
 
 
-def validate_synthetic_args(cells: int, macros: int, blockages: int, allow_over_limit: bool) -> None:
-    errors = []
+def validate_synthetic_args(
+    cells: int,
+    macros: int,
+    blockages: int,
+    nets: int,
+    allow_over_limit: bool,
+) -> None:
+    fatal_errors = []
+    limit_errors = []
     if cells <= 0:
-        errors.append("--cells must be positive")
+        fatal_errors.append("--cells must be positive")
+    if cells < 2:
+        fatal_errors.append("--cells must be at least 2 when generating synthetic nets")
     if macros < 0 or blockages < 0:
-        errors.append("--macros and --blockages must be non-negative")
+        fatal_errors.append("--macros and --blockages must be non-negative")
+    if nets < 0:
+        fatal_errors.append("--nets must be non-negative")
     if cells > MAX_TA_CELLS:
-        errors.append(f"CELL count {cells} exceeds {MAX_TA_CELLS}")
+        limit_errors.append(f"CELL count {cells} exceeds {MAX_TA_CELLS}")
     if macros + blockages > MAX_TA_OBSTACLES:
-        errors.append(f"MACRO+BLOCKAGE count {macros + blockages} exceeds {MAX_TA_OBSTACLES}")
-    if errors and not allow_over_limit:
-        raise RuntimeError("; ".join(errors) + "; pass --allow-over-limit to create it anyway")
+        limit_errors.append(f"MACRO+BLOCKAGE count {macros + blockages} exceeds {MAX_TA_OBSTACLES}")
+    if fatal_errors:
+        raise RuntimeError("; ".join(fatal_errors))
+    if limit_errors and not allow_over_limit:
+        raise RuntimeError("; ".join(limit_errors) + "; pass --allow-over-limit to create it anyway")
 
 
 def synthetic_dimensions(
@@ -325,6 +354,7 @@ def write_synthetic_def(
     macros: int,
     blockages: int,
     utilization: float,
+    nets: int,
     seed: int,
 ) -> Path:
     rng = random.Random(seed)
@@ -337,6 +367,8 @@ def write_synthetic_def(
             file=sys.stderr,
         )
     cell_masters = [rng.choice(lef.core_masters) for _ in range(cells)]
+    if any(not master.pins for master in cell_masters):
+        raise RuntimeError("selected LEF CORE masters must have signal pins to generate synthetic nets")
     movable_area_dbu = sum(master.width_dbu * master.height_dbu for master in cell_masters)
     fixed_area_dbu = sum(master.width_dbu * master.height_dbu for master in macro_masters)
     macro_gap = lef.site_height_dbu * 10
@@ -396,7 +428,19 @@ def write_synthetic_def(
         y = row * lef.site_height_dbu
         orient = "N" if row % 2 == 0 else "FS"
         lines.append(f"- cell_{index} {master.name} + PLACED ( {x} {y} ) {orient} ;\n")
-    lines.extend(["END COMPONENTS\n", "\n", "PINS 0 ;\n", "END PINS\n", "\n", "NETS 0 ;\n", "END NETS\n"])
+    lines.extend(["END COMPONENTS\n", "\n", "PINS 0 ;\n", "END PINS\n", "\n"])
+
+    net_count = cells if nets == 0 else nets
+    lines.append(f"NETS {net_count} ;\n")
+    for index in range(net_count):
+        first = index % cells
+        second = (first + 1 + rng.randrange(min(cells - 1, 97))) % cells
+        first_pin = rng.choice(cell_masters[first].pins)
+        second_pin = rng.choice(cell_masters[second].pins)
+        lines.append(f"- net_{index}\n")
+        lines.append(f"  ( cell_{first} {first_pin} ) ( cell_{second} {second_pin} )\n")
+        lines.append(" ;\n")
+    lines.append("END NETS\n")
 
     if blockages > 0:
         lines.extend(["\n", f"BLOCKAGES {blockages} ;\n"])
@@ -584,7 +628,13 @@ def main() -> int:
     args = parse_args()
     try:
         if args.mode == "synthetic":
-            validate_synthetic_args(args.cells, args.macros, args.blockages, args.allow_over_limit)
+            validate_synthetic_args(
+                args.cells,
+                args.macros,
+                args.blockages,
+                args.nets,
+                args.allow_over_limit,
+            )
             copied_lefs = copy_lefs(args.source_case, args.dest_case, args.force)
             lef = parse_lef_info(copied_lefs)
             def_path = write_synthetic_def(
@@ -595,6 +645,7 @@ def main() -> int:
                 args.macros,
                 args.blockages,
                 args.utilization,
+                args.nets,
                 args.seed,
             )
             movable_components = args.cells
@@ -630,7 +681,10 @@ def main() -> int:
         f"({fixed_or_cover_components} fixed/cover components + {blockages} DEF blockages)"
     )
     print(f"Moved components   : {moved}")
-    print("Run with RUN_GP=0 so OpenROAD does not overwrite the initial stressed placement.")
+    if args.mode == "synthetic":
+        print("Default flow with global_placement is supported; use RUN_GP=0 only for clustered-start stress testing.")
+    else:
+        print("Run with RUN_GP=0 so OpenROAD does not overwrite the initial stressed placement.")
     return 0
 
 
