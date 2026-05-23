@@ -42,3 +42,5 @@ logs/
 .cache/
 .agents/
 .codex/
+
+!tests/*.gp
