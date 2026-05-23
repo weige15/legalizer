@@ -388,9 +388,8 @@ def write_synthetic_def(
             y = ((index % 4) + 1) * die_uy // 6
             x = max(0, min(x, die_ux - blockage_w))
             y = max(0, min(y, die_uy - blockage_h))
-            lines.append(
-                f"- PLACEMENT + RECT ( {x} {y} ) ( {x + blockage_w} {y + blockage_h} ) ;\n"
-            )
+            lines.append("   - PLACEMENT\n")
+            lines.append(f"     RECT ( {x} {y} ) ( {x + blockage_w} {y + blockage_h} ) ;\n")
         lines.append("END BLOCKAGES\n")
 
     lines.append("\nEND DESIGN\n")
