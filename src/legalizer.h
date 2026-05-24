@@ -25,6 +25,7 @@ IntervalSolveResult solveIntervalAbacus(const PlacementModel &model,
 Status legalizePlacement(PlacementModel *model, std::vector<Row> *rows);
 Status legalizePlacementReverse(PlacementModel *model, std::vector<Row> *rows);
 Status tetrisPlaceCell(PlacementModel *model, std::vector<Row> *rows, int cellId);
+Status runDisplacementRepair(PlacementModel *model, std::vector<Row> *rows);
 Status runDorRepair(PlacementModel *model, std::vector<Row> *rows, double alpha,
                     double threshold);
 std::vector<std::string> validateLegality(const PlacementModel &model,

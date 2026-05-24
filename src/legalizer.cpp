@@ -155,6 +155,57 @@ Dbu clampClusterOrigin(const Tech &tech, long double target, Dbu minX, Dbu maxX)
   return clampSiteOrigin(tech, static_cast<Dbu>(rounded), minX, maxX);
 }
 
+long double cellDisplacementCost(const Cell &cell) {
+  if (!cell.placedValid) {
+    return 0.0;
+  }
+  return static_cast<long double>(std::llabs(cell.placed.x - cell.original.x)) +
+         static_cast<long double>(std::llabs(cell.placed.y - cell.original.y));
+}
+
+long double insertionLowerBound(const Cell &cell, const RowInterval &interval) {
+  Dbu minX = interval.xMin;
+  Dbu maxX = interval.xMax - cell.width;
+  if (maxX < minX) {
+    return std::numeric_limits<long double>::infinity();
+  }
+  Dbu xDistance = 0;
+  if (cell.original.x < minX) {
+    xDistance = minX - cell.original.x;
+  } else if (cell.original.x > maxX) {
+    xDistance = cell.original.x - maxX;
+  }
+  return static_cast<long double>(xDistance) +
+         static_cast<long double>(std::llabs(interval.y - cell.original.y));
+}
+
+struct IntervalLocation {
+  bool valid = false;
+  int rowIndex = 0;
+  int intervalIndex = 0;
+};
+
+IntervalLocation findCellLocationInRows(const std::vector<Row> &rows, int cellId) {
+  for (const Row &row : rows) {
+    for (const RowInterval &interval : row.intervals) {
+      if (std::find(interval.cellIds.begin(), interval.cellIds.end(), cellId) !=
+          interval.cellIds.end()) {
+        return IntervalLocation{true, row.rowIndex, interval.intervalIndex};
+      }
+    }
+  }
+  return IntervalLocation{};
+}
+
+RowInterval intervalWithoutCell(const PlacementModel &model,
+                                const RowInterval &interval, int cellId) {
+  RowInterval result = interval;
+  result.cellIds.erase(std::remove(result.cellIds.begin(), result.cellIds.end(), cellId),
+                       result.cellIds.end());
+  result.occupiedWidth = totalWidth(model, result.cellIds);
+  return result;
+}
+
 }  // namespace
 
 namespace {
@@ -175,12 +226,13 @@ Status legalizePlacementWithOrder(PlacementModel *model, std::vector<Row> *rows,
       }
       Row &row = rows->at(static_cast<std::size_t>(rowIdx));
       ++inspectedRows;
-      bool rowHasCapacity = false;
       for (RowInterval &interval : row.intervals) {
         if (interval.occupiedWidth + cell.width > interval.xMax - interval.xMin) {
           continue;
         }
-        rowHasCapacity = true;
+        if (best.valid && insertionLowerBound(cell, interval) > best.score) {
+          continue;
+        }
         std::vector<int> order = insertionOrderFor(*model, interval, cellId);
         IntervalSolveResult solved = solveIntervalAbacus(*model, interval, order);
         if (!solved.ok) {
@@ -200,7 +252,7 @@ Status legalizePlacementWithOrder(PlacementModel *model, std::vector<Row> *rows,
           best.score = score;
         }
       }
-      if (best.valid && rowHasCapacity && inspectedRows >= 12) {
+      if (best.valid && inspectedRows >= 64) {
         break;
       }
     }
@@ -375,6 +427,141 @@ Status tetrisPlaceCell(PlacementModel *model, std::vector<Row> *rows, int cellId
     return ca.name < cb.name;
   });
   recomputeOccupiedWidth(*model, &interval);
+  return Status::Ok();
+}
+
+Status runDisplacementRepair(PlacementModel *model, std::vector<Row> *rows) {
+  std::vector<std::string> diagnostics = validateLegality(*model, *rows);
+  if (!diagnostics.empty()) {
+    return Status::Error("displacement repair skipped because incumbent placement is illegal: " +
+                         diagnostics.front());
+  }
+
+  std::vector<std::pair<long double, int>> byDisplacement;
+  byDisplacement.reserve(model->cells.size());
+  for (std::size_t i = 0; i < model->cells.size(); ++i) {
+    byDisplacement.push_back(
+        {cellDisplacementCost(model->cells[i]), static_cast<int>(i)});
+  }
+  std::sort(byDisplacement.begin(), byDisplacement.end(),
+            [&](const std::pair<long double, int> &a,
+                const std::pair<long double, int> &b) {
+              if (a.first != b.first) return a.first > b.first;
+              return model->cells.at(static_cast<std::size_t>(a.second)).name <
+                     model->cells.at(static_cast<std::size_t>(b.second)).name;
+            });
+
+  const std::size_t maxCells =
+      std::min<std::size_t>(byDisplacement.size(),
+                            std::min<std::size_t>(1024, std::max<std::size_t>(
+                                                            128, model->cells.size() / 100)));
+  const int maxRows = 64;
+  const long double epsilon = 1e-9L;
+
+  for (std::size_t rank = 0; rank < maxCells; ++rank) {
+    if (byDisplacement[rank].first <= epsilon) {
+      break;
+    }
+    int cellId = byDisplacement[rank].second;
+    const Cell &cell = model->cells.at(static_cast<std::size_t>(cellId));
+    IntervalLocation sourceLoc = findCellLocationInRows(*rows, cellId);
+    if (!sourceLoc.valid) {
+      return Status::Error("displacement repair lost source interval for CELL '" +
+                           cell.name + "'");
+    }
+
+    const RowInterval &sourceInterval =
+        rows->at(static_cast<std::size_t>(sourceLoc.rowIndex))
+            .intervals.at(static_cast<std::size_t>(sourceLoc.intervalIndex));
+    RowInterval sourceWithout = intervalWithoutCell(*model, sourceInterval, cellId);
+    IntervalSolveResult sourceSolved =
+        solveIntervalAbacus(*model, sourceWithout, sourceWithout.cellIds);
+    if (!sourceSolved.ok) {
+      continue;
+    }
+
+    const long double sourceBeforeCost = currentIntervalCost(*model, sourceInterval);
+    const long double sourceAfterCost = sourceSolved.cost;
+
+    Candidate best;
+    long double bestDelta = 0.0;
+    int inspectedRows = 0;
+    for (int rowIdx : rowSearchOrder(model->tech, cell.original.y)) {
+      if (rowIdx < 0 || rowIdx >= static_cast<int>(rows->size())) {
+        continue;
+      }
+      if (inspectedRows++ >= maxRows) {
+        break;
+      }
+
+      const Row &row = rows->at(static_cast<std::size_t>(rowIdx));
+      for (const RowInterval &originalInterval : row.intervals) {
+        RowInterval trialInterval = originalInterval;
+        bool sameInterval =
+            rowIdx == sourceLoc.rowIndex &&
+            originalInterval.intervalIndex == sourceLoc.intervalIndex;
+        if (sameInterval) {
+          trialInterval = sourceWithout;
+        }
+        if (trialInterval.occupiedWidth + cell.width >
+            trialInterval.xMax - trialInterval.xMin) {
+          continue;
+        }
+        std::vector<int> order = insertionOrderFor(*model, trialInterval, cellId);
+        IntervalSolveResult solved = solveIntervalAbacus(*model, trialInterval, order);
+        if (!solved.ok) {
+          continue;
+        }
+
+        long double oldCost = sourceBeforeCost;
+        long double newCost = solved.cost;
+        if (!sameInterval) {
+          oldCost += currentIntervalCost(*model, originalInterval);
+          newCost += sourceAfterCost;
+        }
+        long double delta = newCost - oldCost;
+        bool better = delta + epsilon < bestDelta ||
+                      (!best.valid && delta < -epsilon) ||
+                      (best.valid && std::abs(delta - bestDelta) <= epsilon &&
+                       std::tie(rowIdx, originalInterval.intervalIndex) <
+                           std::tie(best.rowIndex, best.intervalIndex));
+        if (better) {
+          best.valid = true;
+          best.rowIndex = rowIdx;
+          best.intervalIndex = originalInterval.intervalIndex;
+          best.order = order;
+          best.xs = solved.xByOrder;
+          best.score = solved.cost;
+          bestDelta = delta;
+        }
+      }
+    }
+
+    if (!best.valid || bestDelta >= -epsilon) {
+      continue;
+    }
+
+    RowInterval &sourceMutable =
+        rows->at(static_cast<std::size_t>(sourceLoc.rowIndex))
+            .intervals.at(static_cast<std::size_t>(sourceLoc.intervalIndex));
+    bool sameInterval = best.rowIndex == sourceLoc.rowIndex &&
+                        best.intervalIndex == sourceLoc.intervalIndex;
+    if (sameInterval) {
+      commitInterval(model, &sourceMutable, best.order, best.xs);
+    } else {
+      commitInterval(model, &sourceMutable, sourceWithout.cellIds, sourceSolved.xByOrder);
+      RowInterval &destMutable =
+          rows->at(static_cast<std::size_t>(best.rowIndex))
+              .intervals.at(static_cast<std::size_t>(best.intervalIndex));
+      commitInterval(model, &destMutable, best.order, best.xs);
+    }
+  }
+
+  diagnostics = validateLegality(*model, *rows);
+  if (!diagnostics.empty()) {
+    return Status::Error("displacement repair produced illegal placement: " +
+                         diagnostics.front());
+  }
   return Status::Ok();
 }
 

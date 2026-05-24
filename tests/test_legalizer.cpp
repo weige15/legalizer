@@ -193,6 +193,24 @@ void testBaselineAndValidator() {
   expectTrue(!diagnostics.empty(), "off-site/obstacle placement should fail");
 }
 
+void testBaselineSearchesPastEarlyFragmentedRows() {
+  PlacementModel model;
+  model.tech.dbuPerMicron = 1000;
+  model.tech.die = Rect{0, 0, 100000, 30000};
+  model.tech.siteWidth = 1000;
+  model.tech.siteHeight = 1000;
+  model.obstacles.push_back(
+      Obstacle{"wall", Rect{0, 0, 90000, 12000}, ObjectType::Blockage, ""});
+  model.cells.push_back(makeCell("near_farther_row", Point{0, 0}, 1000, 1000, "R0"));
+
+  std::vector<Row> rows;
+  expectTrue(buildRowIntervals(model, &rows).ok, "row build failed");
+  Status status = legalizePlacement(&model, &rows);
+  expectTrue(status.ok, status.message);
+  expectEq(model.cells[0].placed.x, static_cast<Dbu>(0), "farther row x");
+  expectEq(model.cells[0].placed.y, static_cast<Dbu>(12000), "farther row y");
+}
+
 void testMetricsAndWriter() {
   PlacementModel model;
   model.tech.dbuPerMicron = 1;
@@ -215,6 +233,22 @@ void testMetricsAndWriter() {
              "writer converts lower-left to mirrored OpenROAD origin");
   expectTrue(text.find("detailed_placement") == std::string::npos,
              "writer must not emit detailed_placement");
+}
+
+void testDisplacementRepairReinsertsCloserCell() {
+  PlacementModel model = smallModel();
+  model.cells.push_back(
+      makeCell("wandered", Point{0, 0}, 1000, 1000, "R0", true, Point{0, 1000}));
+
+  std::vector<Row> rows;
+  expectTrue(buildRowIntervals(model, &rows).ok, "row build failed");
+  rows[1].intervals[0].cellIds.push_back(0);
+  recomputeOccupiedWidth(model, &rows[1].intervals[0]);
+
+  Status status = runDisplacementRepair(&model, &rows);
+  expectTrue(status.ok, status.message);
+  expectEq(model.cells[0].placed.x, static_cast<Dbu>(0), "reinserted x");
+  expectEq(model.cells[0].placed.y, static_cast<Dbu>(0), "reinserted y");
 }
 
 void testDorRepairMovesOverflowContributor() {
@@ -258,7 +292,9 @@ int main() {
   run("RowIntervals", testRowIntervals);
   run("AbacusAndTetris", testAbacusAndTetris);
   run("BaselineAndValidator", testBaselineAndValidator);
+  run("BaselineSearch", testBaselineSearchesPastEarlyFragmentedRows);
   run("MetricsAndWriter", testMetricsAndWriter);
+  run("DisplacementRepair", testDisplacementRepairReinsertsCloserCell);
   run("DorRepair", testDorRepairMovesOverflowContributor);
   run("UnsupportedCells", testUnsupportedCells);
 

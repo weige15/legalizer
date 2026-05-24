@@ -107,7 +107,12 @@ int main(int argc, char **argv) {
     std::cerr << "Selected forward baseline\n";
   }
 
-  legalizer::Metrics beforeRepair = legalizer::evaluateMetrics(model, alpha, threshold);
+  std::cerr << "Running displacement repair\n";
+  status = legalizer::runDisplacementRepair(&model, &rows);
+  if (!status.ok) {
+    std::cerr << "error: " << status.message << "\n";
+    return 1;
+  }
   std::cerr << "Running DOR repair\n";
   status = legalizer::runDorRepair(&model, &rows, alpha, threshold);
   if (!status.ok) {
@@ -116,7 +121,6 @@ int main(int argc, char **argv) {
   }
   std::cerr << "Evaluating final metrics\n";
   legalizer::Metrics finalMetrics = legalizer::evaluateMetrics(model, alpha, threshold);
-  (void)beforeRepair;
 
   std::vector<std::string> diagnostics = legalizer::validateLegality(model, rows);
   if (!diagnostics.empty()) {
