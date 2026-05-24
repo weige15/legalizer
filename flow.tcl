@@ -10,11 +10,20 @@
 #   THRESHOLD=45
 #   RUN_GP=1                            ;# set 0 to skip global_placement
 #   FINAL_TABLES_ONLY=1                 ;# suppress progress logs and print metrics only
+#   FINAL_TABLE_LOG=flow_openroad.log   ;# stderr log path for FINAL_TABLES_ONLY=1
 
 set script_path [file normalize [info script]]
 set repo_root [file dirname $script_path]
 
 proc flow_fail {msg} {
+    if {[llength [info commands final_tables_only]] > 0 && [final_tables_only]} {
+        if {[info exists ::final_table_log_path]} {
+            puts "FLOW ERROR: $msg"
+            puts "OpenROAD log: $::final_table_log_path"
+        } else {
+            puts "FLOW ERROR: $msg"
+        }
+    }
     error "FLOW ERROR: $msg"
 }
 
@@ -23,6 +32,29 @@ proc final_tables_only {} {
         return [expr {$::env(FINAL_TABLES_ONLY) ne "" && $::env(FINAL_TABLES_ONLY) ne "0"}]
     }
     return 0
+}
+
+proc init_final_table_stderr {repo_root default_name} {
+    if {![final_tables_only]} {
+        return
+    }
+
+    if {[info exists ::env(FINAL_TABLE_LOG)] && $::env(FINAL_TABLE_LOG) ne ""} {
+        set log_path $::env(FINAL_TABLE_LOG)
+        if {[file pathtype $log_path] ne "absolute"} {
+            set log_path [file normalize [file join $repo_root $log_path]]
+        }
+    } else {
+        set log_path [file normalize [file join $repo_root $default_name]]
+    }
+    set ::final_table_log_path $log_path
+
+    if {[catch {
+        close stderr
+        open $log_path w
+    }]} {
+        # If stderr redirection is unavailable, keep running; the final table still prints.
+    }
 }
 
 proc log_puts {msg} {
@@ -78,6 +110,8 @@ proc print_flow_metrics {design_name alpha threshold disp dor_info avg_u dor qua
     }
     puts "----------------------------------------"
 }
+
+init_final_table_stderr $repo_root "flow_openroad.log"
 
 proc normalize_case_path {repo_root case_name} {
     if {[file pathtype $case_name] eq "absolute"} {

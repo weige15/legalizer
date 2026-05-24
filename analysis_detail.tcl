@@ -4,6 +4,7 @@
 #   CASE_NAME=ispd19_sample openroad -exit analysis_detail.tcl
 #   RUN_GP=0 CASE_NAME=generated/ispd15_mgc_matrix_mult_a_cluster openroad -exit analysis_detail.tcl
 #   FINAL_TABLES_ONLY=1 CASE_NAME=ispd19_sample openroad -exit analysis_detail.tcl
+#   FINAL_TABLE_LOG=analysis_openroad.log FINAL_TABLES_ONLY=1 CASE_NAME=ispd19_sample openroad -exit analysis_detail.tcl
 #
 # This script is for comparison only. Do not use it as Legalizer output.
 
@@ -11,6 +12,14 @@ set script_path [file normalize [info script]]
 set repo_root [file dirname $script_path]
 
 proc analysis_fail {msg} {
+    if {[llength [info commands final_tables_only]] > 0 && [final_tables_only]} {
+        if {[info exists ::final_table_log_path]} {
+            puts "ANALYSIS ERROR: $msg"
+            puts "OpenROAD log: $::final_table_log_path"
+        } else {
+            puts "ANALYSIS ERROR: $msg"
+        }
+    }
     error "ANALYSIS ERROR: $msg"
 }
 
@@ -19,6 +28,29 @@ proc final_tables_only {} {
         return [expr {$::env(FINAL_TABLES_ONLY) ne "" && $::env(FINAL_TABLES_ONLY) ne "0"}]
     }
     return 0
+}
+
+proc init_final_table_stderr {repo_root default_name} {
+    if {![final_tables_only]} {
+        return
+    }
+
+    if {[info exists ::env(FINAL_TABLE_LOG)] && $::env(FINAL_TABLE_LOG) ne ""} {
+        set log_path $::env(FINAL_TABLE_LOG)
+        if {[file pathtype $log_path] ne "absolute"} {
+            set log_path [file normalize [file join $repo_root $log_path]]
+        }
+    } else {
+        set log_path [file normalize [file join $repo_root $default_name]]
+    }
+    set ::final_table_log_path $log_path
+
+    if {[catch {
+        close stderr
+        open $log_path w
+    }]} {
+        # If stderr redirection is unavailable, keep running; the final table still prints.
+    }
 }
 
 proc log_puts {msg} {
@@ -64,6 +96,8 @@ proc print_analysis_metrics {design_name threshold disp dor_info} {
     }
     puts "----------------------------------------"
 }
+
+init_final_table_stderr $repo_root "analysis_openroad.log"
 
 proc normalize_case_path {repo_root case_name} {
     if {[file pathtype $case_name] eq "absolute"} {
