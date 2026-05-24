@@ -55,6 +55,17 @@ It also smoke-tests the required executable interface:
 OpenROAD child processes. Set `CASE_NAME` to run one case, or `CASES` to run a
 custom Tcl list of case directories.
 
+For a quiet terminal that prints only the final markdown table while saving the
+full OpenROAD output to a log, use the Makefile wrappers:
+
+```sh
+make flow CASE=public/ispd15_mgc_matrix_mult_a/
+make analysis CASE=public/ispd15_mgc_matrix_mult_a/
+```
+
+The full logs are written to `flow_openroad.log` and `analysis_openroad.log`.
+Override them with `FLOW_LOG=...` or `ANALYSIS_LOG=...` if needed.
+
 For each case, the flow builds `Legalizer`, runs it on the extracted
 `${design_name}_insts.gp`, checks that a nonempty output TCL was created,
 rejects output containing `detailed_placement`, and then sources the generated
