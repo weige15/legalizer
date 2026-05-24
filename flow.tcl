@@ -48,6 +48,37 @@ proc run_exec_streaming {cmd} {
     return [exec {*}$cmd >@ stdout 2>@ stderr]
 }
 
+proc print_flow_metrics {design_name alpha threshold disp dor_info avg_u dor quality gp_file out_tcl} {
+    if {[final_tables_only]} {
+        puts "Performance Metrics"
+        puts "| Design | Alpha | Threshold | Movable cells | Total disp (u) | Avg disp (u) | Max disp (u) | Total grids | Overflow grids | DOR | Quality |"
+        puts "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        puts "| $design_name | $alpha | $threshold | [dict get $disp count] | [format "%.3f" [dict get $disp total_u]] | [format "%.3f" $avg_u] | [format "%.3f" [dict get $disp max_u]] | [dict get $dor_info total_grids] | [dict get $dor_info overflow_grids] | [format "%.2f" $dor]% | [format "%.4f" $quality] |"
+        puts "----------------------------------------"
+        return
+    }
+
+    puts ""
+    puts "Performance Metrics"
+    puts "----------------------------------------"
+    puts "Design                 : $design_name"
+    puts "Movable cells          : [dict get $disp count]"
+    puts "Total displacement     : [format "%.3f" [dict get $disp total_u]] u"
+    puts "Average displacement   : [format "%.3f" $avg_u] u"
+    puts "Max displacement       : [format "%.3f" [dict get $disp max_u]] u"
+    puts "Threshold              : $threshold"
+    puts "Total grids            : [dict get $dor_info total_grids]"
+    puts "Overflow grids         : [dict get $dor_info overflow_grids]"
+    puts "DOR                    : [format "%.2f" $dor] %"
+    puts "Quality                : [format "%.4f" $quality]"
+    puts "GP input               : $gp_file"
+    puts "Legalizer TCL          : $out_tcl"
+    if {[dict get $dor_info heat_name] ne ""} {
+        puts "Heatmap CSV            : [dict get $dor_info heat_name]"
+    }
+    puts "----------------------------------------"
+}
+
 proc normalize_case_path {repo_root case_name} {
     if {[file pathtype $case_name] eq "absolute"} {
         return [file normalize $case_name]
@@ -484,25 +515,7 @@ proc run_child {repo_root} {
     set dor [dict get $dor_info dor]
     set quality [expr {$alpha * $avg_u + (1.0 - $alpha) * $dor}]
 
-    puts ""
-    puts "Performance Metrics"
-    puts "----------------------------------------"
-    puts "Design                 : $design_name"
-    puts "Movable cells          : [dict get $disp count]"
-    puts "Total displacement     : [format "%.3f" [dict get $disp total_u]] u"
-    puts "Average displacement   : [format "%.3f" $avg_u] u"
-    puts "Max displacement       : [format "%.3f" [dict get $disp max_u]] u"
-    puts "Threshold              : $threshold"
-    puts "Total grids            : [dict get $dor_info total_grids]"
-    puts "Overflow grids         : [dict get $dor_info overflow_grids]"
-    puts "DOR                    : [format "%.2f" $dor] %"
-    puts "Quality                : [format "%.4f" $quality]"
-    puts "GP input               : $gp_file"
-    puts "Legalizer TCL          : $out_tcl"
-    if {[dict get $dor_info heat_name] ne ""} {
-        puts "Heatmap CSV            : [dict get $dor_info heat_name]"
-    }
-    puts "----------------------------------------"
+    print_flow_metrics $design_name $alpha $threshold $disp $dor_info $avg_u $dor $quality $gp_file $out_tcl
 
     set metrics_csv [flow_metrics_csv $repo_root]
     append_metrics_csv $metrics_csv [list \
@@ -518,7 +531,7 @@ proc run_child {repo_root} {
         [dict get $dor_info overflow_grids] \
         [format "%.6f" $dor] \
         [format "%.6f" $quality]]
-    if {$metrics_csv ne ""} {
+    if {$metrics_csv ne "" && ![final_tables_only]} {
         puts "Metrics CSV            : $metrics_csv"
         puts "Markdown row           : | $design_name | $alpha | $threshold | [format "%.3f" $avg_u] | [format "%.2f" $dor]% | [format "%.4f" $quality] |"
     }

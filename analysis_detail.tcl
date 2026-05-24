@@ -37,6 +37,34 @@ proc run_quietly {script} {
     return [uplevel 1 $script]
 }
 
+proc print_analysis_metrics {design_name threshold disp dor_info} {
+    if {[final_tables_only]} {
+        puts "Detailed Placement Analysis Metrics"
+        puts "| Design | Threshold | Movable cells | Total disp (u) | Avg disp (u) | Max disp (u) | Total grids | Overflow grids | DOR |"
+        puts "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        puts "| $design_name | $threshold | [dict get $disp count] | [format "%.3f" [dict get $disp total_u]] | [format "%.3f" [dict get $disp avg_u]] | [format "%.3f" [dict get $disp max_u]] | [dict get $dor_info total_grids] | [dict get $dor_info overflow_grids] | [format "%.2f" [dict get $dor_info dor]]% |"
+        puts "----------------------------------------"
+        return
+    }
+
+    puts ""
+    puts "Detailed Placement Analysis Metrics"
+    puts "----------------------------------------"
+    puts "Design                 : $design_name"
+    puts "Movable cells          : [dict get $disp count]"
+    puts "Total displacement     : [format "%.3f" [dict get $disp total_u]] u"
+    puts "Average displacement   : [format "%.3f" [dict get $disp avg_u]] u"
+    puts "Max displacement       : [format "%.3f" [dict get $disp max_u]] u"
+    puts "Threshold              : $threshold"
+    puts "Total grids            : [dict get $dor_info total_grids]"
+    puts "Overflow grids         : [dict get $dor_info overflow_grids]"
+    puts "DOR                    : [format "%.2f" [dict get $dor_info dor]] %"
+    if {[dict get $dor_info heat_name] ne ""} {
+        puts "Heatmap CSV            : [dict get $dor_info heat_name]"
+    }
+    puts "----------------------------------------"
+}
+
 proc normalize_case_path {repo_root case_name} {
     if {[file pathtype $case_name] eq "absolute"} {
         return [file normalize $case_name]
@@ -332,19 +360,4 @@ set removed [remove_macros_for_heatmap $block]
 log_puts "Removed $removed macro instance(s) before DOR reporting"
 set dor_info [run_quietly [list report_dor $block $caseName $design_name $threshold]]
 
-puts ""
-puts "Detailed Placement Analysis Metrics"
-puts "----------------------------------------"
-puts "Design                 : $design_name"
-puts "Movable cells          : [dict get $disp count]"
-puts "Total displacement     : [format "%.3f" [dict get $disp total_u]] u"
-puts "Average displacement   : [format "%.3f" [dict get $disp avg_u]] u"
-puts "Max displacement       : [format "%.3f" [dict get $disp max_u]] u"
-puts "Threshold              : $threshold"
-puts "Total grids            : [dict get $dor_info total_grids]"
-puts "Overflow grids         : [dict get $dor_info overflow_grids]"
-puts "DOR                    : [format "%.2f" [dict get $dor_info dor]] %"
-if {[dict get $dor_info heat_name] ne ""} {
-    puts "Heatmap CSV            : [dict get $dor_info heat_name]"
-}
-puts "----------------------------------------"
+print_analysis_metrics $design_name $threshold $disp $dor_info
