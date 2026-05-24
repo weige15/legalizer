@@ -3,6 +3,7 @@
 # Usage:
 #   CASE_NAME=ispd19_sample openroad -exit analysis_detail.tcl
 #   RUN_GP=0 CASE_NAME=generated/ispd15_mgc_matrix_mult_a_cluster openroad -exit analysis_detail.tcl
+#   FINAL_TABLES_ONLY=1 CASE_NAME=ispd19_sample openroad -exit analysis_detail.tcl
 #
 # This script is for comparison only. Do not use it as Legalizer output.
 
@@ -11,6 +12,29 @@ set repo_root [file dirname $script_path]
 
 proc analysis_fail {msg} {
     error "ANALYSIS ERROR: $msg"
+}
+
+proc final_tables_only {} {
+    if {[info exists ::env(FINAL_TABLES_ONLY)]} {
+        return [expr {$::env(FINAL_TABLES_ONLY) ne "" && $::env(FINAL_TABLES_ONLY) ne "0"}]
+    }
+    return 0
+}
+
+proc log_puts {msg} {
+    if {![final_tables_only]} {
+        puts $msg
+    }
+}
+
+proc run_quietly {script} {
+    if {![final_tables_only]} {
+        return [uplevel 1 $script]
+    }
+    if {[llength [info commands redirect]] > 0} {
+        return [uplevel 1 [list redirect -variable ::quiet_output $script]]
+    }
+    return [uplevel 1 $script]
 }
 
 proc normalize_case_path {repo_root case_name} {
@@ -52,12 +76,12 @@ proc load_case {case_name} {
     }
 
     foreach lef_file $lef_files {
-        puts "read_lef $lef_file"
-        read_lef $lef_file
+        log_puts "read_lef $lef_file"
+        run_quietly [list read_lef $lef_file]
     }
     set def_file [lindex $def_files 0]
-    puts "read_def $def_file"
-    read_def $def_file
+    log_puts "read_def $def_file"
+    run_quietly [list read_def $def_file]
 }
 
 proc movable_insts {block} {
@@ -261,19 +285,19 @@ proc extract_gp {repo_root case_name design_name suffix} {
     if {![file exists $extractor]} {
         analysis_fail "missing extractor: $extractor"
     }
-    source $extractor
+    run_quietly [list source $extractor]
 
     set default_gp [file join $case_name "${design_name}_insts.gp"]
     set named_gp [file join $case_name "${design_name}_${suffix}.gp"]
     file rename -force $default_gp $named_gp
-    puts "Saved $suffix GP: $named_gp"
+    log_puts "Saved $suffix GP: $named_gp"
     return $named_gp
 }
 
 set caseName [selected_case $repo_root]
 set threshold [analysis_threshold]
-puts "Running detailed placement analysis for $caseName"
-puts "threshold=$threshold"
+log_puts "Running detailed placement analysis for $caseName"
+log_puts "threshold=$threshold"
 load_case $caseName
 
 set db [ord::get_db]
@@ -287,26 +311,26 @@ set ::block $block
 set ::design_name $design_name
 
 if {[analysis_run_gp]} {
-    puts "Running global_placement -density 0.95"
-    global_placement -density 0.95
+    log_puts "Running global_placement -density 0.95"
+    run_quietly {global_placement -density 0.95}
     record_locations $block gp_locs
     extract_gp $repo_root $caseName $design_name "after_global"
 } else {
-    puts "Skipping global_placement because RUN_GP=0"
+    log_puts "Skipping global_placement because RUN_GP=0"
     record_locations $block gp_locs
     extract_gp $repo_root $caseName $design_name "after_input"
 }
 
-puts "Running detailed_placement for analysis baseline"
-detailed_placement
-puts "Checking detailed placement legality"
-check_placement -verbose
+log_puts "Running detailed_placement for analysis baseline"
+run_quietly {detailed_placement}
+log_puts "Checking detailed placement legality"
+run_quietly {check_placement -verbose}
 extract_gp $repo_root $caseName $design_name "after_detail"
 
 set disp [report_displacement $block gp_locs]
 set removed [remove_macros_for_heatmap $block]
-puts "Removed $removed macro instance(s) before DOR reporting"
-set dor_info [report_dor $block $caseName $design_name $threshold]
+log_puts "Removed $removed macro instance(s) before DOR reporting"
+set dor_info [run_quietly [list report_dor $block $caseName $design_name $threshold]]
 
 puts ""
 puts "Detailed Placement Analysis Metrics"

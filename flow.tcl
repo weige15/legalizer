@@ -9,12 +9,43 @@
 #   ALPHA=0.7
 #   THRESHOLD=45
 #   RUN_GP=1                            ;# set 0 to skip global_placement
+#   FINAL_TABLES_ONLY=1                 ;# suppress progress logs and print metrics only
 
 set script_path [file normalize [info script]]
 set repo_root [file dirname $script_path]
 
 proc flow_fail {msg} {
     error "FLOW ERROR: $msg"
+}
+
+proc final_tables_only {} {
+    if {[info exists ::env(FINAL_TABLES_ONLY)]} {
+        return [expr {$::env(FINAL_TABLES_ONLY) ne "" && $::env(FINAL_TABLES_ONLY) ne "0"}]
+    }
+    return 0
+}
+
+proc log_puts {msg} {
+    if {![final_tables_only]} {
+        puts $msg
+    }
+}
+
+proc run_quietly {script} {
+    if {![final_tables_only]} {
+        return [uplevel 1 $script]
+    }
+    if {[llength [info commands redirect]] > 0} {
+        return [uplevel 1 [list redirect -variable ::quiet_output $script]]
+    }
+    return [uplevel 1 $script]
+}
+
+proc run_exec_streaming {cmd} {
+    if {[final_tables_only]} {
+        return [exec {*}$cmd 2>@1]
+    }
+    return [exec {*}$cmd >@ stdout 2>@ stderr]
 }
 
 proc normalize_case_path {repo_root case_name} {
@@ -101,8 +132,8 @@ proc run_parent {repo_root script_path} {
         set cases [list ispd15_mgc_matrix_mult_a ispd19_sample]
     }
 
-    puts "Building Legalizer"
-    if {[catch {exec make -C $repo_root >@ stdout 2>@ stderr} result]} {
+    log_puts "Building Legalizer"
+    if {[catch {run_exec_streaming [list make -C $repo_root]} result]} {
         flow_fail "make failed: $result"
     }
 
@@ -111,7 +142,7 @@ proc run_parent {repo_root script_path} {
         set fp [open $metrics_csv w]
         puts $fp "case,design,alpha,threshold,movable_cells,average_displacement_u,total_displacement_u,max_displacement_u,total_grids,overflow_grids,dor_percent,quality"
         close $fp
-        puts "Metrics CSV: $metrics_csv"
+        log_puts "Metrics CSV: $metrics_csv"
     }
 
     if {$single_case} {
@@ -119,10 +150,10 @@ proc run_parent {repo_root script_path} {
         if {$metrics_csv ne ""} {
             set ::env(METRICS_CSV) $metrics_csv
         }
-        puts ""
-        puts "============================================================"
-        puts "Running public case: $::env(CASE_NAME)"
-        puts "============================================================"
+        log_puts ""
+        log_puts "============================================================"
+        log_puts "Running public case: $::env(CASE_NAME)"
+        log_puts "============================================================"
         run_child $repo_root
         return
     }
@@ -134,22 +165,25 @@ proc run_parent {repo_root script_path} {
 
     foreach case_name $cases {
         set case_path [normalize_case_path $repo_root $case_name]
-        puts ""
-        puts "============================================================"
-        puts "Running public case: $case_path"
-        puts "============================================================"
+        log_puts ""
+        log_puts "============================================================"
+        log_puts "Running public case: $case_path"
+        log_puts "============================================================"
 
         set cmd [list env FLOW_CHILD=1 CASE_NAME=$case_path ALPHA=[flow_alpha] \
                       THRESHOLD=[flow_threshold] RUN_GP=[flow_run_gp] \
                       METRICS_CSV=$metrics_csv \
                       $openroad_bin -exit $script_path]
-        if {[catch {exec {*}$cmd >@ stdout 2>@ stderr} result]} {
+        if {[catch {run_exec_streaming $cmd} result]} {
             flow_fail "case failed: $case_path\n$result"
+        }
+        if {[final_tables_only] && $result ne ""} {
+            puts $result
         }
     }
 
-    puts ""
-    puts "All requested public cases passed the OpenROAD flow."
+    log_puts ""
+    log_puts "All requested public cases passed the OpenROAD flow."
 }
 
 proc load_case {case_name} {
@@ -160,13 +194,13 @@ proc load_case {case_name} {
     }
 
     foreach lef_file $lef_files {
-        puts "read_lef $lef_file"
-        read_lef $lef_file
+        log_puts "read_lef $lef_file"
+        run_quietly [list read_lef $lef_file]
     }
 
     set def_file [lindex $def_files 0]
-    puts "read_def $def_file"
-    read_def $def_file
+    log_puts "read_def $def_file"
+    run_quietly [list read_def $def_file]
 }
 
 proc movable_insts {block} {
@@ -374,8 +408,8 @@ proc run_child {repo_root} {
     set caseName [normalize_case_path $repo_root $::env(CASE_NAME)]
     set alpha [flow_alpha]
     set threshold [flow_threshold]
-    puts "Case directory: $caseName"
-    puts "alpha=$alpha threshold=$threshold"
+    log_puts "Case directory: $caseName"
+    log_puts "alpha=$alpha threshold=$threshold"
 
     load_case $caseName
 
@@ -390,10 +424,10 @@ proc run_child {repo_root} {
     set ::design_name $design_name
 
     if {[flow_run_gp]} {
-        puts "Running global_placement -density 0.95"
-        global_placement -density 0.95
+        log_puts "Running global_placement -density 0.95"
+        run_quietly {global_placement -density 0.95}
     } else {
-        puts "Skipping global_placement because RUN_GP=0"
+        log_puts "Skipping global_placement because RUN_GP=0"
     }
 
     record_locations $block inst_locs
@@ -402,8 +436,8 @@ proc run_child {repo_root} {
     if {![file exists $extractor]} {
         flow_fail "missing extractor: $extractor"
     }
-    puts "Extracting GP file with $extractor"
-    source $extractor
+    log_puts "Extracting GP file with $extractor"
+    run_quietly [list source $extractor]
 
     set gp_file [file join $caseName "${design_name}_insts.gp"]
     set out_tcl [file join $caseName "${design_name}_legalized.tcl"]
@@ -416,9 +450,9 @@ proc run_child {repo_root} {
         flow_fail "Legalizer is not built or not executable: $legalizer"
     }
 
-    puts "Running Legalizer"
+    log_puts "Running Legalizer"
     set cmd [list timeout 30m $legalizer $alpha $threshold $gp_file $out_tcl]
-    if {[catch {exec {*}$cmd >@ stdout 2>@ stderr} result]} {
+    if {[catch {run_exec_streaming $cmd} result]} {
         flow_fail "Legalizer failed: $result"
     }
     if {![file exists $out_tcl] || [file size $out_tcl] == 0} {
@@ -432,19 +466,19 @@ proc run_child {repo_root} {
         flow_fail "Legalizer output contains forbidden detailed_placement command"
     }
 
-    puts "Sourcing legalized placement TCL"
-    source $out_tcl
+    log_puts "Sourcing legalized placement TCL"
+    run_quietly [list source $out_tcl]
 
-    puts "Checking placement legality"
-    if {[catch {check_placement -verbose} result]} {
+    log_puts "Checking placement legality"
+    if {[catch {run_quietly {check_placement -verbose}} result]} {
         flow_fail "check_placement failed: $result"
     }
-    puts "Legality PASS"
+    log_puts "Legality PASS"
 
     set disp [report_displacement $block inst_locs]
     set removed [remove_macros_for_heatmap $block]
-    puts "Removed $removed macro instance(s) before heatmap DOR reporting"
-    set dor_info [report_dor $block $caseName $design_name $threshold]
+    log_puts "Removed $removed macro instance(s) before heatmap DOR reporting"
+    set dor_info [run_quietly [list report_dor $block $caseName $design_name $threshold]]
 
     set avg_u [dict get $disp avg_u]
     set dor [dict get $dor_info dor]
