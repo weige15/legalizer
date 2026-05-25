@@ -228,7 +228,7 @@ void testMetricsAndWriter() {
   Status status = writeTcl(model, "tests/out_writer.tcl");
   expectTrue(status.ok, status.message);
   std::string text = readFile("tests/out_writer.tcl");
-  expectTrue(text.find("place_cell -inst_name {a[0]} -orient {MX} -origin {0.000000 10.000000}") !=
+  expectTrue(text.find("place_cell -inst_name {a[0]} -orient MX -origin {0.000000 10.000000}") !=
                  std::string::npos,
              "writer converts lower-left to mirrored OpenROAD origin");
   expectTrue(text.find("detailed_placement") == std::string::npos,

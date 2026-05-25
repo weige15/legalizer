@@ -19,7 +19,26 @@ std::string tempPathFor(const std::string &outputPath) {
   return dir + "." + base + ".tmp";
 }
 
-std::string tclBraceWord(const std::string &text) {
+bool isBareTclWordSafe(const std::string &text) {
+  if (text.empty() || text[0] == '-') {
+    return false;
+  }
+  for (char ch : text) {
+    const bool alpha = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+    const bool digit = ch >= '0' && ch <= '9';
+    const bool symbol = ch == '_' || ch == '/' || ch == '.' || ch == ':' || ch == '-';
+    if (!alpha && !digit && !symbol) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string tclWord(const std::string &text) {
+  if (isBareTclWordSafe(text)) {
+    return text;
+  }
+
   std::string quoted;
   quoted.reserve(text.size() + 2);
   quoted.push_back('{');
@@ -68,8 +87,8 @@ Status writeTcl(const PlacementModel &model, const std::string &outputPath) {
         continue;
       }
       Point origin = placeOriginForCell(cell);
-      out << "place_cell -inst_name " << tclBraceWord(cell.name) << " -orient "
-          << tclBraceWord(cell.orient) << " -origin {"
+      out << "place_cell -inst_name " << tclWord(cell.name) << " -orient "
+          << tclWord(cell.orient) << " -origin {"
           << dbuToMicron(model.tech, origin.x) << " "
           << dbuToMicron(model.tech, origin.y) << "}\n";
     }
