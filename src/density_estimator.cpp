@@ -63,27 +63,38 @@ std::vector<DensityGridInfo> computeDensityGrids(const PlacementModel &model,
     }
   }
 
+  const int gridCountX = static_cast<int>(
+      ceilDiv(model.tech.die.ux - model.tech.die.lx, gridSize));
+  const int gridCountY = static_cast<int>(
+      ceilDiv(model.tech.die.uy - model.tech.die.ly, gridSize));
+
   int index = 0;
-  for (const auto &entry : occupiedByGrid) {
-    int gx = entry.first.first;
-    int gy = entry.first.second;
-    Dbu x = model.tech.die.lx + static_cast<Dbu>(gx) * gridSize;
-    Dbu y = model.tech.die.ly + static_cast<Dbu>(gy) * gridSize;
-    Rect grid{x, y, std::min(x + gridSize, model.tech.die.ux),
-              std::min(y + gridSize, model.tech.die.uy)};
-    bool macroCovered = false;
-    for (const Obstacle &obs : model.obstacles) {
-      if (obs.type == ObjectType::Macro && overlaps(grid, obs.rect)) {
-        macroCovered = true;
-        break;
+  for (int gy = 0; gy < gridCountY; ++gy) {
+    for (int gx = 0; gx < gridCountX; ++gx) {
+      Dbu x = model.tech.die.lx + static_cast<Dbu>(gx) * gridSize;
+      Dbu y = model.tech.die.ly + static_cast<Dbu>(gy) * gridSize;
+      Rect grid{x, y, std::min(x + gridSize, model.tech.die.ux),
+                std::min(y + gridSize, model.tech.die.uy)};
+      bool macroCovered = false;
+      for (const Obstacle &obs : model.obstacles) {
+        if (obs.type == ObjectType::Macro && overlaps(grid, obs.rect)) {
+          macroCovered = true;
+          break;
+        }
       }
+      if (macroCovered) {
+        continue;
+      }
+      long double occupied = 0.0;
+      auto occupiedIt = occupiedByGrid.find({gx, gy});
+      if (occupiedIt != occupiedByGrid.end()) {
+        occupied = occupiedIt->second;
+      }
+      long double area = static_cast<long double>(rectArea(grid));
+      double density =
+          area > 0.0 ? static_cast<double>(100.0L * occupied / area) : 0.0;
+      grids.push_back(DensityGridInfo{index++, grid, density, density > threshold});
     }
-    if (macroCovered) {
-      continue;
-    }
-    long double area = static_cast<long double>(rectArea(grid));
-    double density = area > 0.0 ? static_cast<double>(100.0L * entry.second / area) : 0.0;
-    grids.push_back(DensityGridInfo{index++, grid, density, density > threshold});
   }
   return grids;
 }

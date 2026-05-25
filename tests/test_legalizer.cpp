@@ -219,11 +219,16 @@ void testMetricsAndWriter() {
   model.tech.siteHeight = 10;
   model.cells.push_back(makeCell("a[0]", Point{0, 0}, 10, 10, "MX", true, Point{0, 0}));
   Metrics metrics = evaluateMetrics(model, 0.5, 100.0);
-  expectEq(metrics.totalGrids, 1, "occupied grid count");
+  expectEq(metrics.totalGrids, 2, "all non-macro grid count");
   expectEq(metrics.overflowGrids, 0, "threshold equality is not overflow");
   metrics = evaluateMetrics(model, 0.0, 45.0);
   expectEq(metrics.overflowGrids, 1, "one overflow grid");
+  expectEq(metrics.dorPercent, 50.0, "one of two non-macro grids overflows");
   expectEq(metrics.quality, metrics.dorPercent, "alpha zero quality");
+
+  model.obstacles.push_back(Obstacle{"m0", Rect{10, 0, 20, 10}, ObjectType::Macro, "R0"});
+  metrics = evaluateMetrics(model, 0.0, 45.0);
+  expectEq(metrics.totalGrids, 1, "macro grid excluded from denominator");
 
   Status status = writeTcl(model, "tests/out_writer.tcl");
   expectTrue(status.ok, status.message);
@@ -233,6 +238,17 @@ void testMetricsAndWriter() {
              "writer converts lower-left to mirrored OpenROAD origin");
   expectTrue(text.find("detailed_placement") == std::string::npos,
              "writer must not emit detailed_placement");
+
+  PlacementModel safeNameModel = model;
+  safeNameModel.obstacles.clear();
+  safeNameModel.cells.clear();
+  safeNameModel.cells.push_back(
+      makeCell("FE_OFC15837_n_65636", Point{0, 0}, 10, 10, "R0", true, Point{0, 0}));
+  status = writeTcl(safeNameModel, "tests/out_writer_safe_name.tcl");
+  expectTrue(status.ok, status.message);
+  text = readFile("tests/out_writer_safe_name.tcl");
+  expectTrue(text == "place_cell -inst_name FE_OFC15837_n_65636 -orient R0 -origin {0.000000 0.000000}\n",
+             "safe instance names and orientations must be emitted without braces");
 }
 
 void testDisplacementRepairReinsertsCloserCell() {
