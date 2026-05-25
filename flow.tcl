@@ -505,7 +505,7 @@ proc run_child {repo_root} {
     run_quietly [list source $extractor]
 
     set gp_file [file join $caseName "${design_name}_insts.gp"]
-    set out_tcl [file join $caseName "${design_name}_legalized.tcl"]
+    set out_tcl [file join $caseName "${design_name}_insts.tcl"]
     if {![file exists $gp_file] || [file size $gp_file] == 0} {
         flow_fail "extractor did not create a nonempty GP file: $gp_file"
     }
